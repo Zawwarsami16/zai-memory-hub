@@ -1,0 +1,33 @@
+# Caddy reverse proxy for the ZAI Memory Hub.
+#
+# Replace `hub.example.com` with your domain and `Bearer <YOUR_TOKEN>` with
+# the value of ZAI_HUB_AGENT_TOKEN from .env.  Caddy auto-provisions TLS.
+#
+# Place at /etc/caddy/Caddyfile, then `sudo systemctl reload caddy`.
+
+hub.example.com {
+    encode gzip
+
+    route {
+        # Gate /mcp* on the bearer token at the edge.  Backend never sees
+        # unauthorised requests.
+        @mcp_no_token {
+            path /mcp*
+            not header Authorization "Bearer YOUR_AGENT_TOKEN_HERE"
+        }
+        respond @mcp_no_token "Unauthorized — bearer token required" 401
+
+        handle /mcp* {
+            reverse_proxy 127.0.0.1:8765 {
+                flush_interval -1   # streamable-HTTP needs no buffering
+            }
+        }
+
+        handle {
+            reverse_proxy 127.0.0.1:8766 {
+                header_up X-Forwarded-Proto {scheme}
+                header_up X-Forwarded-Host {host}
+            }
+        }
+    }
+}

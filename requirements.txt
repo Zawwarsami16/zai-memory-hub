@@ -1,0 +1,22 @@
+# ZAI Memory Hub — Python dependencies
+# Tested on Python 3.12.
+
+# Core MCP server
+fastmcp>=0.4
+
+# Dashboard
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+
+# Postgres
+psycopg[binary]>=3.1
+
+# PDF ingestion
+pypdf>=4.0
+
+# QR codes (agent-token bootstrap page)
+qrcode[pil]>=7.4
+
+# Off-site backup (optional but recommended)
+b2sdk>=2.0

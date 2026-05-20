@@ -1,0 +1,21 @@
+# systemd unit for the FastAPI dashboard.
+# Install:  sudo cp zai-hub-dashboard.service.example /etc/systemd/system/zai-hub-dashboard.service
+#           sudo systemctl daemon-reload
+#           sudo systemctl enable --now zai-hub-dashboard
+[Unit]
+Description=ZAI Memory Hub - dashboard
+After=network.target postgresql.service zai-hub-mcp.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=zai
+Group=zai
+WorkingDirectory=/opt/zai-memory-hub
+EnvironmentFile=/opt/zai-memory-hub/.env
+ExecStart=/opt/zai-memory-hub/.venv/bin/python -m uvicorn dashboard.app:app --host 127.0.0.1 --port 8766
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

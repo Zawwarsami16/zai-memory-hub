@@ -1,0 +1,21 @@
+# systemd unit for the MCP server.
+# Install:  sudo cp zai-hub-mcp.service.example /etc/systemd/system/zai-hub-mcp.service
+#           sudo systemctl daemon-reload
+#           sudo systemctl enable --now zai-hub-mcp
+[Unit]
+Description=ZAI Memory Hub - MCP server
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=zai
+Group=zai
+WorkingDirectory=/opt/zai-memory-hub
+EnvironmentFile=/opt/zai-memory-hub/.env
+ExecStart=/opt/zai-memory-hub/.venv/bin/python server/run_http.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

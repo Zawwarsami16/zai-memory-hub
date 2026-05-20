@@ -1,0 +1,37 @@
+# Secrets — NEVER commit
+.env
+.env.*
+!.env.example
+auth/
+*.token
+*.key
+!zai-hub-dashboard.key.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.b2venv/
+venv/
+*.egg-info/
+
+# Generated dashboard assets (regenerated via scripts/gen.py)
+dashboard/static/gen/
+dashboard/static/uploads/
+
+# Logs + caches
+logs/
+*.log
+.cache/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Postgres dumps (use B2 backup instead)
+*.sql.gz
+*.dump

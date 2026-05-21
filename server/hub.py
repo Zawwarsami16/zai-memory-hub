@@ -34,6 +34,7 @@ import sys
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal, Optional, Sequence
 
 import psycopg
@@ -303,6 +304,73 @@ def _scan_for_secrets(content: str) -> list[str]:
     return found
 
 
+# -------------------- Voyage embeddings --------------------------
+# When voyage.token is present, memory.recall switches from substring
+# (ILIKE) to vector cosine similarity (pgvector ivfflat index).  We
+# also generate embeddings on memory.add so new writes are searchable
+# semantically immediately.  Failures degrade gracefully — write
+# still succeeds, recall falls back to substring.
+
+VOYAGE_TOKEN_PATH = Path(os.environ.get(
+    "VOYAGE_TOKEN_PATH",
+    Path(__file__).resolve().parent.parent / "auth" / "voyage.token"))
+VOYAGE_MODEL = os.environ.get("VOYAGE_MODEL", "voyage-3.5-lite")
+VOYAGE_DIM = 1024
+_voyage_key_cache = {"loaded_at": 0, "key": None}
+
+
+def _voyage_key() -> Optional[str]:
+    """Read the Voyage key once per minute, cached. None if file missing."""
+    now = time.time()
+    if now - _voyage_key_cache["loaded_at"] < 60 and _voyage_key_cache["key"] is not None:
+        return _voyage_key_cache["key"]
+    try:
+        if VOYAGE_TOKEN_PATH.exists():
+            k = VOYAGE_TOKEN_PATH.read_text().strip()
+            _voyage_key_cache["key"] = k or None
+            _voyage_key_cache["loaded_at"] = now
+            return _voyage_key_cache["key"]
+    except Exception as e:
+        print(f"[voyage] key read error: {e}", file=sys.stderr)
+    _voyage_key_cache["key"] = None
+    return None
+
+
+def _embed(text: str, input_type: str = "document") -> Optional[list[float]]:
+    """Return a 1024-dim Voyage embedding for `text`, or None on any failure.
+    `input_type` is 'document' for stored memories, 'query' for search queries."""
+    key = _voyage_key()
+    if not key or not text or not text.strip():
+        return None
+    import urllib.request, urllib.error
+    body = json.dumps({
+        "input": [text[:8000]],   # cap at ~2k tokens worth of chars
+        "model": VOYAGE_MODEL,
+        "input_type": input_type,
+    }).encode()
+    try:
+        req = urllib.request.Request(
+            "https://api.voyageai.com/v1/embeddings",
+            data=body, method="POST",
+            headers={"Authorization": f"Bearer {key}",
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            resp = json.loads(r.read())
+        if "data" in resp and resp["data"]:
+            return resp["data"][0]["embedding"]
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")[:200]
+        print(f"[voyage] HTTP {e.code}: {body}", file=sys.stderr)
+    except Exception as e:
+        print(f"[voyage] embed error: {e}", file=sys.stderr)
+    return None
+
+
+def _embedding_to_pgvector(v: list[float]) -> str:
+    """pgvector wants the literal "[0.1,0.2,...]" string when inserting."""
+    return "[" + ",".join(f"{x:.6f}" for x in v) + "]"
+
+
 def _summarize(content: str, max_len: int = 200) -> str:
     """Brief preview of a memory body for the default recall response.
     Cuts at the first paragraph break, sentence end, or hard char limit."""
@@ -526,15 +594,18 @@ def memory_add(content: str, tags: Optional[list[str]] = None,
                             "content_preview": content[:80]},
                            f"dedup id={out['id']}", ms, actor)
             return out
+        # Compute embedding before insert (best-effort; None if Voyage down)
+        emb = _embed(content, input_type="document")
+        emb_literal = _embedding_to_pgvector(emb) if emb else None
         cu.execute(
-            "INSERT INTO memories(content, tags, entity_ids, written_by, session_id, importance) "
-            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, created_at",
-            (content, tags, entity_ids, actor["slug"], SESSION_ID, importance),
+            "INSERT INTO memories(content, tags, entity_ids, written_by, session_id, importance, embedding) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s::vector) RETURNING id, created_at",
+            (content, tags, entity_ids, actor["slug"], SESSION_ID, importance, emb_literal),
         )
         row = cu.fetchone()
     ms = int((time.time() - t0) * 1000)
     out = {"id": str(row["id"]), "created_at": row["created_at"].isoformat(),
-           "deduped": False}
+           "deduped": False, "embedded": emb is not None}
     _log_tool_call("memory.add",
                    {"tags": tags, "entities": entities, "importance": importance,
                     "content_preview": content[:80]},
@@ -571,17 +642,40 @@ def memory_recall(query: str, k: int = 5, tags: Optional[list[str]] = None,
     if err: return err
 
     k = max(1, min(k, 50))
-    sql = ["SELECT id, content, tags, written_by, importance, created_at "
-           "FROM memories WHERE deleted_at IS NULL AND content ILIKE %s"]
-    params: list = [f"%{query}%"]
-    if tags:
-        sql.append("AND tags && %s"); params.append(tags)
-    if entity:
-        ids = _resolve_entities([entity])
-        if ids:
-            sql.append("AND entity_ids && %s"); params.append(ids)
-    sql.append("ORDER BY importance DESC, created_at DESC LIMIT %s")
-    params.append(k)
+    # Try semantic search first (Voyage embeddings + pgvector cosine).  Fall
+    # back to substring if Voyage is unreachable or no key configured.
+    q_emb = _embed(query, input_type="query")
+    mode = "semantic"
+    if q_emb is None:
+        mode = "substring"
+    if mode == "semantic":
+        sql = ["SELECT id, content, tags, written_by, importance, created_at, "
+               "1 - (embedding <=> %s::vector) AS similarity "
+               "FROM memories WHERE deleted_at IS NULL AND embedding IS NOT NULL"]
+        params: list = [_embedding_to_pgvector(q_emb)]
+        if tags:
+            sql.append("AND tags && %s"); params.append(tags)
+        if entity:
+            ids = _resolve_entities([entity])
+            if ids:
+                sql.append("AND entity_ids && %s"); params.append(ids)
+        # Cosine similarity descending (= distance ascending)
+        sql.append("ORDER BY embedding <=> %s::vector LIMIT %s")
+        params.append(_embedding_to_pgvector(q_emb))
+        params.append(k)
+    else:
+        sql = ["SELECT id, content, tags, written_by, importance, created_at, "
+               "NULL::float AS similarity "
+               "FROM memories WHERE deleted_at IS NULL AND content ILIKE %s"]
+        params = [f"%{query}%"]
+        if tags:
+            sql.append("AND tags && %s"); params.append(tags)
+        if entity:
+            ids = _resolve_entities([entity])
+            if ids:
+                sql.append("AND entity_ids && %s"); params.append(ids)
+        sql.append("ORDER BY importance DESC, created_at DESC LIMIT %s")
+        params.append(k)
     with _conn() as cx, cx.cursor() as cu:
         cu.execute(" ".join(sql), params)
         rows = cu.fetchall()
@@ -591,15 +685,19 @@ def memory_recall(query: str, k: int = 5, tags: Optional[list[str]] = None,
         item = {"id": str(r["id"]), "tags": r["tags"],
                 "written_by": r["written_by"], "importance": r["importance"],
                 "created_at": r["created_at"].isoformat()}
+        if r.get("similarity") is not None:
+            item["similarity"] = round(float(r["similarity"]), 4)
         if full:
             item["content"] = r["content"]
         else:
             item["summary"] = _summarize(r["content"])
         result.append(item)
     _log_tool_call("memory.recall",
-                   {"query": query, "k": k, "tags": tags, "entity": entity, "full": full},
-                   f"hits={len(result)}", ms, actor)
-    return {"hits": result, "mode": "full" if full else "summary"}
+                   {"query": query, "k": k, "tags": tags, "entity": entity,
+                    "full": full, "mode": mode},
+                   f"{mode} hits={len(result)}", ms, actor)
+    return {"hits": result, "search_mode": mode,
+            "response_mode": "full" if full else "summary"}
 
 
 @mcp.tool()

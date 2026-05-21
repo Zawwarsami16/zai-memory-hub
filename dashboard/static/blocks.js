@@ -122,7 +122,7 @@ function renderAgents(){
       </div>
       <div class="placeholder-title">Connect a new agent</div>
       <div class="placeholder-body">
-        Set <code>ZAI_HUB_WRITTEN_BY=&lt;slug&gt;</code>, point your MCP client at <code>${window.location.origin}/mcp</code>, write a memory - your panel appears here automatically.
+        Set <code>ZAI_HUB_WRITTEN_BY=&lt;slug&gt;</code>, point your MCP client at <code>${window.location.origin}/mcp</code>, write a memory — your panel appears here automatically.
       </div>
       <a class="placeholder-cta" href="/connect">How to connect →</a>
     </article>
@@ -167,10 +167,18 @@ function renderSide(){
              p.age_s < 86400 ? Math.floor(p.age_s/3600)+'h' : '—')
           : 'never';
         const img = ACTOR_IMG[p.slug];
-        const lbl = p.slug.replace('-claude','').toUpperCase();
-        return `<div class="so-row">
-          <div class="so-avatar ${cls}" style="${img ? `background-image:url(${img})` : `background:${colorFor(p.slug)}`}">${!img ? lbl[0] : ''}</div>
-          <div class="so-lbl">${esc(lbl)}-Claude</div>
+        // Strip the -claude suffix for compactness but show whole slug if
+        // it's not a *-claude pattern (custom-named agents stay full).
+        const displayName = p.slug.includes('-claude')
+          ? p.slug.replace('-claude','').toUpperCase() + '-Claude'
+          : p.slug.toUpperCase();
+        const initial = (p.slug[0] || '?').toUpperCase();
+        const roleBadge = p.role && p.role !== 'admin'
+          ? ` <span style="color:#8b6a5a;font-size:9px;letter-spacing:.06em">· ${esc(p.role)}</span>`
+          : (p.role === 'admin' ? ` <span style="color:#dc2626;font-size:9px">· admin</span>` : '');
+        return `<div class="so-row" title="${esc(p.label || '')}">
+          <div class="so-avatar ${cls}" style="${img ? `background-image:url(${img})` : `background:${colorFor(p.slug)}`}">${!img ? initial : ''}</div>
+          <div class="so-lbl">${esc(displayName)}${roleBadge}</div>
           <div class="so-ago">${esc(ago)}</div>
         </div>`;
       }).join('');
@@ -312,7 +320,20 @@ function setupReveal(){
   }, 3000);
 }
 
-function render(){ renderAgents(); renderTimeline(); renderBlocks(); renderSide(); renderDocs(); }
+function render(){
+  // Hold re-renders while the user is interacting with the upload form
+  // or actively typing in any input — otherwise SSE-driven refreshes
+  // eat keystrokes and steal focus.
+  if (window.__formOpen) return;
+  const ae = document.activeElement;
+  if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) {
+    // Reschedule once the user is done typing
+    clearTimeout(window.__renderRetry);
+    window.__renderRetry = setTimeout(render, 1500);
+    return;
+  }
+  renderAgents(); renderTimeline(); renderBlocks(); renderSide(); renderDocs();
+}
 
 // ----- Documents (PDF vault) ------------------------------------
 const Docs = { items: [], uploading: false };
@@ -341,15 +362,39 @@ function renderDocs(){
     const tagStr = (d.tags || []).slice(0, 3).join(' · ');
     const cover = d.cover_url ? `<div class="doc-cover" style="background-image:url('${esc(d.cover_url)}')"></div>`
                               : `<div class="doc-ico">PDF</div>`;
-    return `<a class="doc-card ${d.cover_url ? 'has-cover' : ''}" href="${esc(d.url)}" target="_blank" rel="noopener" data-mid="${esc(d.id)}">
-      ${cover}
-      <div class="doc-meta">
-        <div class="doc-title">${esc(trunc(d.title || 'Untitled', 80))}</div>
-        <div class="doc-sub">${pages}p · ${esc(size)} · ${esc(timeAgo(d.created_at))}${tagStr ? ' · ' + esc(tagStr) : ''}</div>
-      </div>
-      <div class="doc-arrow">→</div>
-    </a>`;
+    return `<div class="doc-row ${d.cover_url ? 'has-cover' : ''}" data-mid="${esc(d.id)}">
+      <a class="doc-card" href="${esc(d.url)}" target="_blank" rel="noopener">
+        ${cover}
+        <div class="doc-meta">
+          <div class="doc-title">${esc(trunc(d.title || 'Untitled', 80))}</div>
+          <div class="doc-sub">${pages}p · ${esc(size)} · ${esc(timeAgo(d.created_at))}${tagStr ? ' · ' + esc(tagStr) : ''}</div>
+        </div>
+        <div class="doc-arrow">→</div>
+      </a>
+      <button class="doc-del" title="Delete this document" aria-label="Delete">🗑</button>
+    </div>`;
   }).join('');
+  // Wire delete buttons
+  el.querySelectorAll('.doc-del').forEach(btn => {
+    btn.addEventListener('click', async (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      const row = btn.closest('.doc-row');
+      const mid = row.getAttribute('data-mid');
+      const title = row.querySelector('.doc-title').textContent.trim();
+      if (!confirm(`Delete this document?\n\n"${title}"\n\nIt'll go to /trash and you can restore it from there.`)) return;
+      btn.disabled = true; btn.textContent = '…';
+      try {
+        const r = await fetch('/api/memory/' + mid + '/delete', { method: 'POST' });
+        if (!r.ok) throw new Error(await r.text() || 'delete failed');
+        uploadToast('Moved to trash: ' + title);
+        await loadDocs();
+        await loadAll();
+      } catch(e) {
+        uploadToast('Delete failed: ' + e.message, true);
+        btn.disabled = false; btn.textContent = '🗑';
+      }
+    });
+  });
 }
 
 function uploadToast(msg, isErr){
@@ -366,6 +411,7 @@ function uploadToast(msg, isErr){
 const Upload = { file: null };
 
 function showForm(meta){
+  window.__formOpen = true;   // pause re-renders while form is open
   document.getElementById('docsDrop').hidden = true;
   const f = document.getElementById('docsForm');
   f.hidden = false;
@@ -384,6 +430,8 @@ function hideForm(){
   document.getElementById('docsDrop').hidden = false;
   Upload.file = null;
   document.getElementById('docsFile').value = '';
+  window.__formOpen = false;   // resume re-renders
+  render();                    // catch up on anything we held off on
 }
 
 async function pickFile(file){

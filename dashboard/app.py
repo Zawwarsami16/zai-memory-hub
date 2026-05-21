@@ -42,7 +42,7 @@ DB_DSN = os.environ.get(
 DASHBOARD_KEY = os.environ.get("ZAI_HUB_DASHBOARD_KEY")
 if not DASHBOARD_KEY:
     DASHBOARD_KEY = secrets.token_urlsafe(24)
-    print(f"[dashboard] WARN: ZAI_HUB_DASHBOARD_KEY not set - generated ephemeral key: {DASHBOARD_KEY}",
+    print(f"[dashboard] WARN: ZAI_HUB_DASHBOARD_KEY not set — generated ephemeral key: {DASHBOARD_KEY}",
           file=sys.stderr, flush=True)
 COOKIE_NAME = "zai_hub_session"
 
@@ -445,6 +445,390 @@ def api_export(_: None = Depends(require_auth),
     )
 
 
+# ---- /health (public, no auth) -----------------------------------
+# Lets connected agents probe before depending on the hub.  Returns
+# {ok, db, version, agents_active} so a degraded mode can be triggered
+# client-side ("no hub today, working in-context only") instead of
+# erroring on first tool call.
+
+HUB_VERSION = "0.4.0"  # bump on schema or auth changes
+
+
+@app.get("/health")
+def health():
+    db_ok = True
+    agents_active = 0
+    try:
+        with db() as cx, cx.cursor() as cu:
+            cu.execute("SELECT 1")
+            cu.execute("SELECT count(*) AS n FROM agent_tokens WHERE revoked_at IS NULL")
+            agents_active = cu.fetchone()["n"]
+    except Exception:
+        db_ok = False
+    return JSONResponse({
+        "ok": db_ok,
+        "service": "zai-memory-hub",
+        "version": HUB_VERSION,
+        "db": "up" if db_ok else "down",
+        "agents_active": agents_active,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }, status_code=200 if db_ok else 503)
+
+
+# ---- OAuth 2.0 + Dynamic Client Registration ---------------------
+# Lets MCP-aware OAuth clients (Claude.ai web's custom-connector wizard,
+# Cursor, etc.) auto-register and walk through an auth-code flow that
+# ends with a bearer token bound to a chosen slug + role in agent_tokens.
+
+ROLE_DEFAULT = "writer"        # default role the consent screen offers
+CODE_TTL_SECONDS = 300         # 5 minutes for the user to finish consent
+
+
+def _hash_token(t: str) -> str:
+    return hashlib.sha256(t.encode()).hexdigest()
+
+
+def _mint_agent_token(slug: str, role: str, label: str, issued_via: str = "manual") -> str:
+    token = "zai_" + secrets.token_urlsafe(32)
+    h = _hash_token(token)
+    with db() as cx, cx.cursor() as cu:
+        cu.execute(
+            "INSERT INTO agent_tokens (token_hash, slug, role, label, issued_via) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (h, slug, role, label, issued_via))
+    return token
+
+
+@app.get("/.well-known/oauth-authorization-server")
+def oauth_metadata():
+    """OAuth 2.0 authorization server metadata (RFC 8414).
+
+    This is the first thing Claude.ai (and other MCP-aware OAuth clients)
+    hits when 'Add custom connector' walks the wizard.  It tells them
+    where the endpoints live and what grants we support."""
+    return JSONResponse({
+        "issuer": PUBLIC_URL,
+        "authorization_endpoint": f"{PUBLIC_URL}/oauth/authorize",
+        "token_endpoint": f"{PUBLIC_URL}/oauth/token",
+        "registration_endpoint": f"{PUBLIC_URL}/oauth/register",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "code_challenge_methods_supported": ["S256", "plain"],
+        "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
+        "scopes_supported": ["mcp:read", "mcp:write", "mcp:delete"],
+        "service_documentation": f"{PUBLIC_URL}/connect",
+    })
+
+
+@app.get("/.well-known/oauth-protected-resource")
+def oauth_resource_metadata():
+    """RFC 9728 — tells clients which auth server protects this resource."""
+    return JSONResponse({
+        "resource": f"{PUBLIC_URL}/mcp",
+        "authorization_servers": [PUBLIC_URL],
+        "scopes_supported": ["mcp:read", "mcp:write", "mcp:delete"],
+        "bearer_methods_supported": ["header"],
+    })
+
+
+@app.post("/oauth/register")
+async def oauth_register(req: Request):
+    """RFC 7591 — Dynamic Client Registration.
+
+    Open by design: any MCP client can register itself.  The bearer
+    issued at the end of the flow is what carries the actual privilege,
+    not the client_id."""
+    try:
+        body = await req.json()
+    except Exception:
+        raise HTTPException(400, "invalid JSON")
+    client_name = (body.get("client_name") or "unknown-client")[:120]
+    redirect_uris = body.get("redirect_uris") or []
+    if not redirect_uris or not isinstance(redirect_uris, list):
+        raise HTTPException(400, "redirect_uris required")
+    token_auth = body.get("token_endpoint_auth_method", "none")
+    scope = body.get("scope", "mcp:read mcp:write")
+    client_id = "cli_" + secrets.token_urlsafe(16)
+    client_secret = None
+    if token_auth == "client_secret_post":
+        client_secret = secrets.token_urlsafe(32)
+    with db() as cx, cx.cursor() as cu:
+        cu.execute(
+            "INSERT INTO oauth_clients (client_id, client_secret, client_name, "
+            "redirect_uris, token_endpoint_auth_method, scope) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (client_id, client_secret, client_name, redirect_uris, token_auth, scope))
+    resp = {
+        "client_id": client_id,
+        "client_name": client_name,
+        "redirect_uris": redirect_uris,
+        "grant_types": ["authorization_code"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": token_auth,
+        "scope": scope,
+    }
+    if client_secret:
+        resp["client_secret"] = client_secret
+    return JSONResponse(resp, status_code=201)
+
+
+@app.get("/oauth/authorize", response_class=HTMLResponse)
+def oauth_authorize(request: Request,
+                    response_type: str = "",
+                    client_id: str = "",
+                    redirect_uri: str = "",
+                    scope: str = "mcp:read mcp:write",
+                    state: str = "",
+                    code_challenge: str = "",
+                    code_challenge_method: str = "S256"):
+    """Consent screen.  User must already be logged into the dashboard
+    (cookie auth) — that's how we know it's actually them and not a
+    drive-by approving on their behalf."""
+    if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
+        # Bounce through /login first; preserve the full authorize URL
+        from urllib.parse import urlencode, quote
+        params = {"response_type": response_type, "client_id": client_id,
+                  "redirect_uri": redirect_uri, "scope": scope, "state": state,
+                  "code_challenge": code_challenge,
+                  "code_challenge_method": code_challenge_method}
+        target = "/oauth/authorize?" + urlencode(params)
+        return HTMLResponse(
+            f"<html><body style='font-family:monospace;padding:40px;background:#0a0508;color:#f5ecdb;line-height:1.7'>"
+            f"<h1 style='font-family:Georgia,serif;font-style:italic;color:#e8d49a'>One step.</h1>"
+            f"<p>Log into the dashboard first, then this consent screen will work.</p>"
+            f"<p><a href='/login?key=YOUR_KEY&next={quote(target)}' style='color:#dc2626'>→ /login?key=YOUR_KEY&next=…</a></p>"
+            f"<p style='color:#8b6a5a;font-size:13px'>(replace YOUR_KEY with your dashboard key)</p></body></html>",
+            status_code=401)
+    # Look up the client
+    with db() as cx, cx.cursor() as cu:
+        cu.execute("SELECT client_name, redirect_uris FROM oauth_clients WHERE client_id = %s",
+                   (client_id,))
+        client = cu.fetchone()
+    if not client:
+        raise HTTPException(400, f"unknown client_id: {client_id}")
+    if redirect_uri not in (client["redirect_uris"] or []):
+        raise HTTPException(400, "redirect_uri mismatch")
+    # Determine which role the user can grant.  Default is ROLE_DEFAULT (writer).
+    # Future: let the user pick from a dropdown.
+    role = ROLE_DEFAULT
+    # Slug suggestion: slugified client name + short suffix for uniqueness
+    import re
+    slug_base = re.sub(r'[^a-z0-9-]', '-', client["client_name"].lower()).strip('-')[:40] or "agent"
+    slug_suggest = f"{slug_base}-{secrets.token_hex(2)}"
+    return HTMLResponse(_render_consent_screen(
+        client_name=client["client_name"],
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        scope=scope,
+        state=state,
+        code_challenge=code_challenge,
+        code_challenge_method=code_challenge_method,
+        slug_suggest=slug_suggest,
+        role=role,
+    ))
+
+
+def _render_consent_screen(client_name, client_id, redirect_uri, scope, state,
+                            code_challenge, code_challenge_method, slug_suggest, role):
+    from html import escape
+    return f"""<!doctype html>
+<html><head><meta charset='utf-8'><title>Authorize · ZAI Memory Hub</title>
+<style>
+  body {{ font-family: Georgia, serif; background: #0a0508; color: #f5ecdb; margin: 0;
+          min-height: 100vh; display: grid; place-items: center; padding: 40px 20px; }}
+  .card {{ max-width: 540px; width: 100%; background: rgba(20,8,10,0.85); border: 1px solid #5c3d20;
+           padding: 36px 40px; border-radius: 3px; }}
+  .eyebrow {{ font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: .4em;
+              color: #c4924a; text-transform: uppercase; }}
+  h1 {{ font-style: italic; font-size: 28px; margin: 8px 0 18px; color: #f5dca3; }}
+  p {{ line-height: 1.6; color: #d4c5a0; font-size: 14px; }}
+  .grants {{ background: rgba(8,3,6,0.7); border-left: 2px solid #dc2626; padding: 14px 18px;
+             margin: 18px 0; }}
+  .grants li {{ font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #f5ecdb; }}
+  label {{ display:block; font-family:'JetBrains Mono',monospace; font-size:10px;
+           letter-spacing:.32em; color:#c4924a; text-transform:uppercase; margin: 14px 0 4px; }}
+  input[type=text] {{ width: 100%; padding: 9px 11px; background: rgba(8,3,6,0.6); color: #f5dca3;
+                       border: 1px solid #5c3d20; border-radius: 2px; font-family: 'JetBrains Mono',monospace;
+                       font-size: 13px; box-sizing: border-box; }}
+  .actions {{ display: flex; gap: 12px; margin-top: 24px; }}
+  button {{ flex: 1; padding: 10px 18px; border: 1px solid #5c3d20; background: rgba(8,3,6,0.7);
+            color: #c4924a; font-family: 'JetBrains Mono',monospace; font-size: 10px;
+            letter-spacing: .32em; text-transform: uppercase; border-radius: 2px; cursor: pointer; }}
+  button.primary {{ background: linear-gradient(180deg,#dc2626,#9a1212); color: #f5dca3; border-color: #dc2626; }}
+  button:hover {{ transform: translateY(-1px); }}
+  small {{ color: #8b6a5a; font-size: 11px; }}
+</style></head>
+<body><div class='card'>
+  <div class='eyebrow'>OAuth consent · ZAI Memory Hub</div>
+  <h1>Authorize {escape(client_name)}?</h1>
+  <p>This client wants permission to read and write to your memory hub on your behalf.</p>
+  <div class='grants'>
+    <p style='margin:0 0 6px;font-family:JetBrains Mono,monospace;font-size:10px;letter-spacing:.3em;color:#c4924a;text-transform:uppercase'>It will be able to:</p>
+    <ul style='margin:6px 0 0;padding-left:18px'>
+      <li>read your memories &amp; decisions</li>
+      <li>append new memories &amp; decisions</li>
+      <li>log interactions (session boundaries)</li>
+      <li>upsert entities</li>
+    </ul>
+    <p style='margin:8px 0 0;font-family:JetBrains Mono,monospace;font-size:10px;letter-spacing:.3em;color:#8b6a5a;text-transform:uppercase'>It will NOT be able to:</p>
+    <ul style='margin:6px 0 0;padding-left:18px;color:#8b6a5a'>
+      <li>delete any memory (you control deletes from /trash)</li>
+    </ul>
+  </div>
+  <form method='post' action='/oauth/authorize/approve'>
+    <input type='hidden' name='client_id' value='{escape(client_id)}'>
+    <input type='hidden' name='redirect_uri' value='{escape(redirect_uri)}'>
+    <input type='hidden' name='scope' value='{escape(scope)}'>
+    <input type='hidden' name='state' value='{escape(state)}'>
+    <input type='hidden' name='code_challenge' value='{escape(code_challenge)}'>
+    <input type='hidden' name='code_challenge_method' value='{escape(code_challenge_method)}'>
+    <input type='hidden' name='role' value='{escape(role)}'>
+    <label>Slug this agent will write as <small>(stable identity; appears on your dashboard)</small></label>
+    <input type='text' name='slug' value='{escape(slug_suggest)}' required maxlength='60'>
+    <div class='actions'>
+      <button type='submit' name='action' value='deny'>Deny</button>
+      <button type='submit' name='action' value='approve' class='primary'>Approve as writer</button>
+    </div>
+  </form>
+</div></body></html>
+"""
+
+
+@app.post("/oauth/authorize/approve")
+async def oauth_authorize_approve(
+    request: Request,
+    client_id: str = Form(...),
+    redirect_uri: str = Form(...),
+    scope: str = Form(""),
+    state: str = Form(""),
+    code_challenge: str = Form(""),
+    code_challenge_method: str = Form("S256"),
+    slug: str = Form(...),
+    role: str = Form("writer"),
+    action: str = Form(...),
+):
+    if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
+        raise HTTPException(401, "dashboard auth required")
+    from urllib.parse import urlencode
+    if action != "approve":
+        return RedirectResponse(
+            redirect_uri + "?" + urlencode({"error": "access_denied", "state": state}),
+            status_code=302)
+    # Issue an auth code
+    code = secrets.token_urlsafe(32)
+    expires = datetime.now(timezone.utc).timestamp() + CODE_TTL_SECONDS
+    expires_iso = datetime.fromtimestamp(expires, tz=timezone.utc).isoformat()
+    import re
+    slug_clean = re.sub(r'[^a-z0-9-]', '-', slug.lower()).strip('-')[:60] or "agent"
+    role_clean = role if role in ("writer", "recall-only") else "writer"
+    with db() as cx, cx.cursor() as cu:
+        cu.execute(
+            "INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, "
+            "code_challenge_method, scope, slug, role, expires_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (code, client_id, redirect_uri, code_challenge or None,
+             code_challenge_method or None, scope, slug_clean, role_clean, expires_iso))
+    params = {"code": code}
+    if state:
+        params["state"] = state
+    return RedirectResponse(redirect_uri + "?" + urlencode(params), status_code=302)
+
+
+@app.post("/oauth/token")
+async def oauth_token(request: Request):
+    """Exchange an authorization code for a bearer token."""
+    form = await request.form()
+    grant_type = form.get("grant_type")
+    code = form.get("code")
+    redirect_uri = form.get("redirect_uri")
+    client_id = form.get("client_id")
+    code_verifier = form.get("code_verifier")
+    if grant_type != "authorization_code":
+        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+    if not (code and redirect_uri and client_id):
+        return JSONResponse({"error": "invalid_request"}, status_code=400)
+    with db() as cx, cx.cursor() as cu:
+        cu.execute(
+            "SELECT client_id, redirect_uri, code_challenge, code_challenge_method, "
+            "scope, slug, role, expires_at, used_at "
+            "FROM oauth_codes WHERE code = %s", (code,))
+        row = cu.fetchone()
+        if not row:
+            return JSONResponse({"error": "invalid_grant", "detail": "unknown code"}, status_code=400)
+        if row["used_at"] is not None:
+            return JSONResponse({"error": "invalid_grant", "detail": "code already used"}, status_code=400)
+        if row["expires_at"] < datetime.now(timezone.utc):
+            return JSONResponse({"error": "invalid_grant", "detail": "code expired"}, status_code=400)
+        if row["client_id"] != client_id or row["redirect_uri"] != redirect_uri:
+            return JSONResponse({"error": "invalid_grant", "detail": "client/redirect mismatch"}, status_code=400)
+        # PKCE verification
+        if row["code_challenge"]:
+            if not code_verifier:
+                return JSONResponse({"error": "invalid_grant", "detail": "code_verifier required"}, status_code=400)
+            import hashlib as _h, base64 as _b
+            method = row["code_challenge_method"] or "plain"
+            if method == "S256":
+                vh = _b.urlsafe_b64encode(_h.sha256(code_verifier.encode()).digest()).decode().rstrip("=")
+                if vh != row["code_challenge"]:
+                    return JSONResponse({"error": "invalid_grant", "detail": "PKCE mismatch"}, status_code=400)
+            else:  # plain
+                if code_verifier != row["code_challenge"]:
+                    return JSONResponse({"error": "invalid_grant", "detail": "PKCE mismatch"}, status_code=400)
+        # Look up the client name for the token label
+        cu.execute("SELECT client_name FROM oauth_clients WHERE client_id = %s", (client_id,))
+        c = cu.fetchone()
+        label = (c["client_name"] if c else client_id)[:120]
+        # Mint the bearer token bound to slug+role
+        access_token = _mint_agent_token(slug=row["slug"], role=row["role"],
+                                          label=f"oauth · {label}", issued_via="oauth")
+        cu.execute("UPDATE oauth_codes SET used_at = now() WHERE code = %s", (code,))
+    return JSONResponse({
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "scope": row["scope"] or "mcp:read mcp:write",
+    })
+
+
+# ---- Token management (dashboard-side) --------------------------
+
+@app.get("/api/tokens")
+def api_tokens(_: None = Depends(require_auth)):
+    with db() as cx, cx.cursor() as cu:
+        cu.execute("""
+            SELECT id, slug, role, label, issued_via, created_at, last_used_at, revoked_at
+              FROM agent_tokens
+             ORDER BY revoked_at IS NULL DESC, last_used_at DESC NULLS LAST, created_at DESC""")
+        rows = cu.fetchall()
+    return [{**r,
+             "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+             "last_used_at": r["last_used_at"].isoformat() if r["last_used_at"] else None,
+             "revoked_at": r["revoked_at"].isoformat() if r["revoked_at"] else None}
+            for r in rows]
+
+
+@app.post("/api/tokens/mint")
+def api_tokens_mint(_: None = Depends(require_auth),
+                    slug: str = Form(...), role: str = Form("writer"),
+                    label: str = Form("")):
+    role = role if role in ("admin", "writer", "recall-only") else "writer"
+    import re
+    slug_clean = re.sub(r'[^a-z0-9-]', '-', slug.lower()).strip('-')[:60] or "agent"
+    token = _mint_agent_token(slug=slug_clean, role=role, label=label[:120], issued_via="manual")
+    return {"ok": True, "slug": slug_clean, "role": role, "token": token,
+            "warning": "save this token now; it will not be shown again"}
+
+
+@app.post("/api/tokens/{tid}/revoke")
+def api_tokens_revoke(tid: int, _: None = Depends(require_auth)):
+    with db() as cx, cx.cursor() as cu:
+        cu.execute("UPDATE agent_tokens SET revoked_at = now() WHERE id = %s "
+                   "RETURNING slug, role", (tid,))
+        row = cu.fetchone()
+    if not row:
+        raise HTTPException(404, "token not found")
+    return {"ok": True, **row}
+
+
 # ---- BLOCKS HOME endpoints ---------------------------------------
 
 @app.get("/api/agents")
@@ -733,9 +1117,7 @@ def _extract_pdf_text(data: bytes, max_chars: int = 2400):
         return None, None, 0
 
 
-REPLICATE_TOKEN_PATH = Path(
-    os.environ.get("REPLICATE_TOKEN_PATH",
-                   Path(__file__).resolve().parent.parent / "auth" / "replicate.token"))
+REPLICATE_TOKEN_PATH = Path(os.environ.get("REPLICATE_TOKEN_PATH", Path(__file__).resolve().parent.parent / "auth" / "replicate.token"))
 COVERS_DIR = STATIC_DIR / "uploads" / "covers"
 COVERS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1245,8 +1627,19 @@ def api_memory_stream(_: None = Depends(require_auth), buckets: int = 30):
 
 @app.get("/api/presence")
 def api_presence(_: None = Depends(require_auth)):
-    actor_slugs = ["vps-claude", "local-claude", "chat-claude"]
+    """Live presence rail. Reads the set of agents from agent_tokens
+    (active, never-revoked) instead of a hardcoded list, so any agent that
+    has been granted a token shows up here — even before its first write."""
     with db() as cx, cx.cursor() as cu:
+        # Every active agent gets a row, ordered by most-recently-used
+        cu.execute("""
+            SELECT slug, role, label, last_used_at
+              FROM agent_tokens
+             WHERE revoked_at IS NULL
+             ORDER BY last_used_at DESC NULLS LAST, created_at DESC""")
+        token_rows = cu.fetchall()
+        # And separately, what's the most-recent timestamp this slug
+        # actually wrote anything (memory / decision / tool call).
         cu.execute("""
             SELECT actor, max(t) AS last_seen FROM (
               SELECT called_by AS actor, created_at AS t FROM tool_calls WHERE called_by IS NOT NULL
@@ -1254,19 +1647,40 @@ def api_presence(_: None = Depends(require_auth)):
               SELECT written_by, created_at FROM memories WHERE written_by IS NOT NULL
               UNION ALL
               SELECT written_by, created_at FROM decisions WHERE written_by IS NOT NULL
+              UNION ALL
+              SELECT actor, created_at FROM audit_log WHERE actor IS NOT NULL
             ) x GROUP BY actor
         """)
         last = {r["actor"]: r["last_seen"] for r in cu.fetchall()}
     now = time.time()
     out = []
-    for slug in actor_slugs:
-        ts = last.get(slug)
+    seen_slugs = set()
+    for r in token_rows:
+        slug = r["slug"]
+        seen_slugs.add(slug)
+        # Prefer last activity (write), fall back to last_used_at on the token,
+        # so an agent that authenticated but never wrote still shows as "recent"
+        # rather than "never".
+        ts = last.get(slug) or r["last_used_at"]
         if ts is None:
-            out.append({"slug": slug, "status": "cold", "age_s": None, "last_seen": None})
+            out.append({"slug": slug, "role": r["role"], "label": r["label"],
+                        "status": "cold", "age_s": None, "last_seen": None})
             continue
         age = now - ts.timestamp()
         status = "online" if age < 300 else ("recent" if age < 3600 else "idle")
-        out.append({"slug": slug, "status": status, "age_s": age, "last_seen": ts.isoformat()})
+        out.append({"slug": slug, "role": r["role"], "label": r["label"],
+                    "status": status, "age_s": age,
+                    "last_seen": ts.isoformat()})
+    # Also surface slugs that wrote to the hub but no longer have an active
+    # token (revoked/deleted). They become "ghost" entries — useful for
+    # provenance, sit at the bottom.
+    for slug, ts in last.items():
+        if slug in seen_slugs:
+            continue
+        age = now - ts.timestamp()
+        out.append({"slug": slug, "role": "(revoked)", "label": "no active token",
+                    "status": "ghost", "age_s": age,
+                    "last_seen": ts.isoformat()})
     return out
 
 
@@ -4636,6 +5050,14 @@ code{font-family:var(--mono);font-size:.85em;background:rgba(220,38,38,0.08);pad
   border:1px solid var(--line-bright);box-shadow:0 4px 12px -4px rgba(0,0,0,.5);justify-self:center}
 .doc-card.has-cover{grid-template-columns:44px 1fr auto}
 
+/* Doc row = card + delete-button */
+.doc-row{position:relative;display:grid;grid-template-columns:1fr auto;gap:6px;align-items:stretch}
+.doc-row .doc-card{flex:1}
+.doc-del{background:rgba(8,3,6,0.6);border:1px solid var(--line);border-radius:3px;width:36px;
+  color:var(--gold-deep);font-size:14px;cursor:pointer;transition:.15s;align-self:stretch;display:grid;place-items:center}
+.doc-del:hover{color:var(--red-warm);border-color:var(--red);background:rgba(40,8,12,0.7)}
+.doc-del:disabled{opacity:.5;cursor:wait}
+
 /* ===== TIMELINE TICKER (compressed) ===== */
 .timeline-ticker{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:3px;overflow:hidden;list-style:none;padding:0;margin:0}
 .tk-row{display:grid;grid-template-columns:80px 14px 100px 1fr 130px 20px;gap:10px;align-items:center;padding:11px 16px;border-top:1px solid var(--line);cursor:pointer;transition:background .15s, padding-left .15s;list-style:none;position:relative}
@@ -4919,7 +5341,7 @@ code{font-family:var(--mono);font-size:.85em;background:rgba(220,38,38,0.08);pad
 </aside>
 <div id="uploadToast"></div>
 
-<script src="/static/blocks.js?v=2026-05-20-prod-5"></script>
+<script src="/static/blocks.js?v=2026-05-20-prod-8"></script>
 </body></html>
 """
 
@@ -5301,9 +5723,7 @@ memory_add(
 """
 
 
-AGENT_TOKEN_PATH = Path(
-    os.environ.get("ZAI_HUB_AGENT_TOKEN_PATH",
-                   Path(__file__).resolve().parent.parent / "auth" / "agent.token"))
+AGENT_TOKEN_PATH = Path(os.environ.get("ZAI_HUB_AGENT_TOKEN_PATH", Path(__file__).resolve().parent.parent / "auth" / "agent.token"))
 
 
 def _load_agent_token():
@@ -5602,12 +6022,9 @@ def agent_token_page(request: Request):
             "<html><body style='font-family:monospace;padding:40px;background:#0a0508;color:#f5ecdb'>"
             "ZAI Memory Hub — auth required. Visit <code>/login?key=YOUR_KEY</code>.</body></html>",
             status_code=401)
-    token = _load_agent_token() or "(token file missing - create one and save it at $ZAI_HUB_AGENT_TOKEN_PATH)"
+    token = _load_agent_token() or "(token file missing — run: python -c \"import secrets; print('zai_'+secrets.token_urlsafe(32))\" > $ZAI_HUB_AGENT_TOKEN_PATH)"
     login_url = f"{PUBLIC_URL}/login?key={DASHBOARD_KEY}"
-    html = (AGENT_TOKEN_HTML
-            .replace("__AGENT_TOKEN__", token)
-            .replace("__LOGIN_URL__", login_url)
-            .replace("{PUBLIC_URL}", PUBLIC_URL))
+    html = AGENT_TOKEN_HTML.replace("__AGENT_TOKEN__", token).replace("__LOGIN_URL__", login_url)
     return HTMLResponse(html, headers={
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     })
@@ -5633,6 +6050,565 @@ def qr_login(request: Request):
                              headers={"Cache-Control": "no-store"})
 
 
+# ---- Graph API + page ---------------------------------------------
+
+@app.get("/api/graph/{slug}")
+def api_graph_entity(slug: str, _: None = Depends(require_auth)):
+    """Same data the MCP entity_neighborhood tool returns, but available
+    to the dashboard via cookie auth (no bearer needed)."""
+    with db() as cx, cx.cursor() as cu:
+        cu.execute("SELECT id, slug, kind, display, metadata FROM entities WHERE slug = %s", (slug,))
+        root = cu.fetchone()
+        if not root:
+            raise HTTPException(404, f"unknown entity: {slug}")
+        cu.execute("""
+            SELECT id::text, substring(content for 200) AS preview, tags, written_by,
+                   importance, created_at FROM memories
+             WHERE deleted_at IS NULL AND %s = ANY(entity_ids)
+             ORDER BY importance DESC, created_at DESC LIMIT 50""", (root["id"],))
+        memories = [{**r, "created_at": r["created_at"].isoformat()} for r in cu.fetchall()]
+        cu.execute("""
+            SELECT id::text, summary, substring(rationale for 200) AS rationale_preview,
+                   written_by, created_at FROM decisions
+             WHERE deleted_at IS NULL AND %s = ANY(entity_ids)
+             ORDER BY created_at DESC LIMIT 30""", (root["id"],))
+        decisions = [{**r, "created_at": r["created_at"].isoformat()} for r in cu.fetchall()]
+        cu.execute("""
+            WITH root_writes AS (
+              SELECT entity_ids FROM memories
+                WHERE deleted_at IS NULL AND %s = ANY(entity_ids)
+              UNION ALL
+              SELECT entity_ids FROM decisions
+                WHERE deleted_at IS NULL AND %s = ANY(entity_ids))
+            SELECT e.id::text, e.slug, e.kind, e.display, count(*)::int AS shared
+              FROM root_writes rw, unnest(rw.entity_ids) eid
+              JOIN entities e ON e.id = eid
+             WHERE e.id <> %s GROUP BY e.id, e.slug, e.kind, e.display
+             ORDER BY shared DESC, e.slug LIMIT 30""",
+            (root["id"], root["id"], root["id"]))
+        neighbors = [dict(r) for r in cu.fetchall()]
+    return {
+        "root": {"id": str(root["id"]), "slug": root["slug"], "kind": root["kind"],
+                 "display": root["display"], "metadata": root["metadata"]},
+        "memories": memories, "decisions": decisions, "neighbors": neighbors,
+    }
+
+
+@app.get("/api/entities")
+def api_entities(_: None = Depends(require_auth)):
+    """List every entity for the graph-explorer landing page."""
+    with db() as cx, cx.cursor() as cu:
+        cu.execute("""
+            SELECT e.id::text, e.slug, e.kind, e.display,
+                   (SELECT count(*) FROM memories m
+                     WHERE m.deleted_at IS NULL AND e.id = ANY(m.entity_ids)) AS memory_count,
+                   (SELECT count(*) FROM decisions d
+                     WHERE d.deleted_at IS NULL AND e.id = ANY(d.entity_ids)) AS decision_count
+              FROM entities e
+             ORDER BY memory_count DESC, e.slug""")
+        return [dict(r) for r in cu.fetchall()]
+
+
+GRAPH_HTML = r"""<!doctype html>
+<html><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>Graph · ZAI Memory Hub</title>
+<style>
+  :root{--bg:#0a0508;--surface:rgba(20,8,10,0.85);--surface-2:rgba(8,3,6,0.7);
+        --line:#3a2a20;--line-bright:#5c3d20;--gold:#c4924a;--gold-bright:#f5dca3;
+        --gold-deep:#8b6a5a;--fg:#f5ecdb;--fg-soft:#d4c5a0;--fg-dim:#8b7c68;
+        --red:#dc2626;--red-warm:#ef4444;--mono:'JetBrains Mono','SF Mono',Consolas,monospace;
+        --serif:Georgia,serif}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;overflow:hidden}
+  .nav{display:flex;justify-content:space-between;align-items:center;padding:14px 24px;
+       border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11px;letter-spacing:.32em;
+       text-transform:uppercase;color:var(--gold-deep);position:fixed;top:0;left:0;right:0;
+       background:rgba(10,5,8,0.85);backdrop-filter:blur(10px);z-index:10}
+  .nav a{color:var(--gold-deep);text-decoration:none}
+  .nav a:hover{color:var(--red-warm)}
+  .nav .brand{color:var(--gold-bright);letter-spacing:.4em}
+  .layout{display:grid;grid-template-columns:340px 1fr;height:100vh;padding-top:50px}
+  .sidebar{background:var(--surface);border-right:1px solid var(--line);overflow-y:auto;padding:20px 22px}
+  .eyebrow{font-family:var(--mono);font-size:9.5px;letter-spacing:.36em;color:var(--gold);
+           text-transform:uppercase;margin:0 0 6px}
+  h1{font-family:var(--serif);font-style:italic;font-size:24px;color:var(--gold-bright);margin:0 0 4px}
+  .kind{font-family:var(--mono);font-size:10px;color:var(--red-warm);letter-spacing:.2em;
+        text-transform:uppercase}
+  .stats{display:flex;gap:14px;margin:14px 0 20px;padding:10px 0;
+         border-top:1px dashed var(--line);border-bottom:1px dashed var(--line);
+         font-family:var(--mono);font-size:11px;color:var(--gold-deep)}
+  .stats strong{color:var(--gold-bright);font-size:16px;display:block}
+  .blk{margin:22px 0}
+  .blk-head{font-family:var(--mono);font-size:9.5px;letter-spacing:.32em;color:var(--gold);
+            text-transform:uppercase;margin-bottom:8px}
+  .item{padding:10px 12px;margin-bottom:6px;background:var(--surface-2);border-left:2px solid var(--gold-deep);
+        border-radius:0 2px 2px 0;cursor:pointer;transition:.15s}
+  .item:hover{background:rgba(40,12,15,0.6);border-left-color:var(--red-warm)}
+  .item .t{font-family:var(--serif);font-style:italic;color:var(--gold-bright);font-size:13px;line-height:1.4}
+  .item .m{font-family:var(--mono);font-size:9.5px;color:var(--gold-deep);margin-top:4px;letter-spacing:.04em}
+  .canvas-wrap{position:relative;background:radial-gradient(ellipse at 50% 50%,rgba(220,38,38,0.05),transparent 70%)}
+  svg{width:100%;height:100%}
+  .legend{position:absolute;bottom:18px;right:20px;font-family:var(--mono);font-size:10px;
+          color:var(--gold-deep);background:rgba(8,3,6,0.85);padding:10px 14px;border:1px solid var(--line);
+          border-radius:2px;letter-spacing:.06em;line-height:1.7}
+  .legend .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:middle}
+  .empty{position:absolute;inset:0;display:grid;place-items:center;text-align:center;
+         color:var(--fg-dim);font-family:var(--serif);font-style:italic;font-size:14px;padding:40px}
+  .empty a{color:var(--gold-bright);text-decoration:none;border-bottom:1px dashed}
+  /* Search */
+  .search{margin-bottom:20px}
+  .search input{width:100%;padding:9px 11px;background:var(--surface-2);color:var(--gold-bright);
+                 border:1px solid var(--line);border-radius:2px;font-family:var(--mono);font-size:12.5px}
+  .search input:focus{outline:0;border-color:var(--red-warm)}
+  .ent-list{max-height:60vh;overflow-y:auto}
+  .ent{display:flex;justify-content:space-between;padding:8px 10px;cursor:pointer;border-bottom:1px solid var(--line);
+       transition:.12s}
+  .ent:hover{background:rgba(40,12,15,0.4)}
+  .ent .slug{font-family:var(--mono);font-size:11.5px;color:var(--gold-bright)}
+  .ent .meta{font-family:var(--mono);font-size:9.5px;color:var(--gold-deep)}
+  @media(max-width:760px){
+    .layout{grid-template-columns:1fr;grid-template-rows:1fr 1fr}
+    .sidebar{border-right:none;border-bottom:1px solid var(--line)}
+  }
+</style></head>
+<body>
+<nav class='nav'>
+  <a href='/'><span class='brand'>Z A I</span> · memory hub</a>
+  <div><a href='/'>home</a> · <a href='/connect'>connect</a> · <a href='/trash'>trash</a> · <a href='/agents'>agents</a> · <span style='color:var(--gold-bright)'>graph</span></div>
+</nav>
+<div class='layout'>
+  <aside class='sidebar' id='sidebar'>loading…</aside>
+  <div class='canvas-wrap'>
+    <svg id='canvas'></svg>
+    <div class='legend'>
+      <div><span class='dot' style='background:#dc2626'></span>root entity</div>
+      <div><span class='dot' style='background:#e8d49a'></span>neighbor entity</div>
+      <div><span class='dot' style='background:#7aa6ff'></span>memory</div>
+      <div><span class='dot' style='background:#c084ff'></span>decision</div>
+    </div>
+  </div>
+</div>
+<script>
+const slug = window.location.pathname.split('/').filter(Boolean)[1] || null;
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
+const trunc = (s, n) => s && s.length > n ? s.slice(0,n)+'…' : (s || '');
+
+async function loadEntityList() {
+  const sb = document.getElementById('sidebar');
+  const r = await fetch('/api/entities');
+  if (!r.ok) { sb.innerHTML = '<div class=empty>Failed to load entities</div>'; return; }
+  const ents = await r.json();
+  sb.innerHTML = `
+    <div class='eyebrow'>knowledge graph</div>
+    <h1 style='margin-bottom:18px'>Pick an entity.</h1>
+    <p style='color:var(--fg-soft);font-family:var(--serif);font-style:italic;font-size:13.5px;line-height:1.6;margin-bottom:20px'>
+      Each entity is a node in the hub.  Click one to see its memories, decisions, and which other entities co-appear in the same writes.
+    </p>
+    <div class='search'><input id='entSearch' placeholder='filter…' autofocus></div>
+    <div class='ent-list' id='entList'>${ents.length ? ents.map(e => `
+      <div class='ent' data-slug='${esc(e.slug)}'>
+        <div><div class='slug'>${esc(e.slug)}</div><div class='meta'>${esc(e.kind)} · ${esc(e.display||'')}</div></div>
+        <div class='meta'>${e.memory_count}m / ${e.decision_count}d</div>
+      </div>`).join('') : '<div class=empty>No entities yet. Have an agent call entity.upsert.</div>'}</div>`;
+  document.getElementById('entSearch').addEventListener('input', e => {
+    const q = e.target.value.toLowerCase();
+    document.querySelectorAll('#entList .ent').forEach(el => {
+      el.style.display = el.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+  document.querySelectorAll('.ent').forEach(el => {
+    el.addEventListener('click', () => { window.location = '/graph/' + el.dataset.slug; });
+  });
+  document.getElementById('canvas').parentElement.querySelector('.empty')?.remove();
+  document.getElementById('canvas').parentElement.insertAdjacentHTML('beforeend',
+    '<div class=empty>Pick an entity from the left.</div>');
+}
+
+async function loadEntity(slug) {
+  const sb = document.getElementById('sidebar');
+  const r = await fetch('/api/graph/' + encodeURIComponent(slug));
+  if (!r.ok) { sb.innerHTML = `<div class=empty>Entity not found: ${esc(slug)}.<br><br><a href='/graph'>browse all</a></div>`; return; }
+  const g = await r.json();
+  const mc = g.memories.length, dc = g.decisions.length, nc = g.neighbors.length;
+  sb.innerHTML = `
+    <div class='eyebrow'>${esc(g.root.kind)} · entity</div>
+    <h1>${esc(g.root.display || g.root.slug)}</h1>
+    <div class='kind'>${esc(g.root.slug)}</div>
+    <div class='stats'>
+      <div><strong>${mc}</strong>memories</div>
+      <div><strong>${dc}</strong>decisions</div>
+      <div><strong>${nc}</strong>neighbors</div>
+    </div>
+    ${mc ? `<div class='blk'><div class='blk-head'>memories</div>${g.memories.slice(0,10).map(m => `
+      <div class='item'><div class='t'>${esc(trunc(m.preview, 110))}</div>
+        <div class='m'>${esc(m.written_by)} · imp ${m.importance} · ${esc(new Date(m.created_at).toLocaleString())}</div>
+      </div>`).join('')}${mc > 10 ? `<div class='m' style='margin-top:6px'>+ ${mc-10} more</div>` : ''}</div>` : ''}
+    ${dc ? `<div class='blk'><div class='blk-head'>decisions</div>${g.decisions.slice(0,5).map(d => `
+      <div class='item'><div class='t'>${esc(trunc(d.summary, 110))}</div>
+        <div class='m'>${esc(d.written_by)} · ${esc(new Date(d.created_at).toLocaleString())}</div>
+      </div>`).join('')}</div>` : ''}
+    ${nc ? `<div class='blk'><div class='blk-head'>neighbors</div>${g.neighbors.slice(0,15).map(n => `
+      <div class='item' onclick="window.location='/graph/${esc(n.slug)}'">
+        <div class='t'>${esc(n.display || n.slug)}</div>
+        <div class='m'>${esc(n.kind)} · shared ${n.shared}× · <span style='color:var(--gold-bright)'>${esc(n.slug)}</span></div>
+      </div>`).join('')}</div>` : ''}
+    <a href='/graph' style='font-family:var(--mono);font-size:10px;letter-spacing:.28em;color:var(--gold-deep);text-decoration:none;text-transform:uppercase'>← back to all entities</a>`;
+  drawGraph(g);
+}
+
+function drawGraph(g) {
+  const svg = document.getElementById('canvas');
+  const W = svg.clientWidth, H = svg.clientHeight;
+  svg.innerHTML = '';
+  const cx = W/2, cy = H/2;
+  // Nodes
+  const nodes = [{id:'root', label:g.root.display||g.root.slug, kind:'root', x:cx, y:cy, r:18}];
+  const links = [];
+  g.neighbors.slice(0,12).forEach((n,i) => {
+    const angle = (i/Math.max(g.neighbors.slice(0,12).length,1)) * 2*Math.PI;
+    nodes.push({id:'n'+i, label:n.display||n.slug, kind:'neighbor', slug:n.slug,
+                x: cx + Math.cos(angle)*Math.min(W,H)*0.32,
+                y: cy + Math.sin(angle)*Math.min(W,H)*0.32,
+                r: 9 + Math.min(n.shared, 5)*1.5});
+    links.push({a:'root', b:'n'+i, weight:n.shared});
+  });
+  g.memories.slice(0,8).forEach((m,i) => {
+    const angle = (i/8 + 0.5) * 2*Math.PI;
+    nodes.push({id:'m'+i, label:trunc(m.preview, 30), kind:'memory',
+                x: cx + Math.cos(angle)*Math.min(W,H)*0.16,
+                y: cy + Math.sin(angle)*Math.min(W,H)*0.16,
+                r: 4 + m.importance*0.7});
+    links.push({a:'root', b:'m'+i, weight:1});
+  });
+  g.decisions.slice(0,4).forEach((d,i) => {
+    const angle = (i/4) * 2*Math.PI;
+    nodes.push({id:'d'+i, label:trunc(d.summary, 30), kind:'decision',
+                x: cx + Math.cos(angle)*Math.min(W,H)*0.22,
+                y: cy + Math.sin(angle)*Math.min(W,H)*0.22,
+                r: 6});
+    links.push({a:'root', b:'d'+i, weight:1});
+  });
+  // Render links first
+  const COLORS = {root:'#dc2626', neighbor:'#e8d49a', memory:'#7aa6ff', decision:'#c084ff'};
+  links.forEach(l => {
+    const a = nodes.find(n => n.id === l.a), b = nodes.find(n => n.id === l.b);
+    const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    ln.setAttribute('x1', a.x); ln.setAttribute('y1', a.y);
+    ln.setAttribute('x2', b.x); ln.setAttribute('y2', b.y);
+    ln.setAttribute('stroke', '#5c3d20'); ln.setAttribute('stroke-width', Math.min(l.weight,3));
+    ln.setAttribute('stroke-opacity', '0.45');
+    svg.appendChild(ln);
+  });
+  nodes.forEach(n => {
+    const grp = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    grp.style.cursor = n.slug ? 'pointer' : 'default';
+    if (n.slug) grp.addEventListener('click', () => { window.location = '/graph/' + n.slug; });
+    const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    c.setAttribute('cx', n.x); c.setAttribute('cy', n.y); c.setAttribute('r', n.r);
+    c.setAttribute('fill', COLORS[n.kind]);
+    c.setAttribute('stroke', '#0a0508'); c.setAttribute('stroke-width', '2');
+    c.style.filter = `drop-shadow(0 0 ${n.r/2}px ${COLORS[n.kind]}88)`;
+    grp.appendChild(c);
+    const tx = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    tx.setAttribute('x', n.x); tx.setAttribute('y', n.y + n.r + 14);
+    tx.setAttribute('text-anchor', 'middle');
+    tx.setAttribute('fill', n.kind === 'root' ? '#f5dca3' : '#d4c5a0');
+    tx.setAttribute('font-family', "'JetBrains Mono',monospace");
+    tx.setAttribute('font-size', n.kind === 'root' ? '13' : '10.5');
+    tx.textContent = n.label;
+    grp.appendChild(tx);
+    svg.appendChild(grp);
+  });
+}
+
+if (slug) loadEntity(slug);
+else loadEntityList();
+</script>
+</body></html>
+"""
+
+
+@app.get("/graph", response_class=HTMLResponse)
+@app.get("/graph/{slug}", response_class=HTMLResponse)
+def graph_page(request: Request, slug: str = ""):
+    if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
+        return HTMLResponse(
+            "<html><body style='font-family:monospace;padding:40px;background:#0a0508;color:#f5ecdb'>"
+            "ZAI Memory Hub — auth required. Visit <code>/login?key=YOUR_KEY</code>.</body></html>",
+            status_code=401)
+    return HTMLResponse(GRAPH_HTML, headers={"Cache-Control": "no-store"})
+
+
+AGENTS_HTML = r"""<!doctype html>
+<html><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>Agents · ZAI Memory Hub</title>
+<style>
+  :root{--bg:#0a0508;--surface:rgba(20,8,10,0.85);--surface-2:rgba(8,3,6,0.7);
+        --line:#3a2a20;--line-bright:#5c3d20;--gold:#c4924a;--gold-bright:#f5dca3;
+        --gold-deep:#8b6a5a;--fg:#f5ecdb;--fg-soft:#d4c5a0;--fg-dim:#8b7c68;
+        --red:#dc2626;--red-warm:#ef4444;--mono:'JetBrains Mono','SF Mono',Consolas,monospace;
+        --serif:Georgia,serif;--sans:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);min-height:100vh;
+       background-image:radial-gradient(ellipse at 50% -20%,rgba(220,38,38,0.08),transparent 60%);}
+  .nav{display:flex;justify-content:space-between;align-items:center;padding:18px 28px;
+       border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11px;letter-spacing:.32em;
+       text-transform:uppercase;color:var(--gold-deep)}
+  .nav a{color:var(--gold-deep);text-decoration:none;transition:.15s}
+  .nav a:hover{color:var(--red-warm)}
+  .nav .brand{color:var(--gold-bright);letter-spacing:.4em}
+  .wrap{max-width:880px;margin:0 auto;padding:36px 24px 80px}
+  .eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.4em;color:var(--gold);
+           text-transform:uppercase;margin-bottom:6px}
+  h1{font-family:var(--serif);font-style:italic;font-size:34px;color:var(--gold-bright);
+     margin:0 0 8px;line-height:1.1}
+  .lead{font-family:var(--serif);font-style:italic;font-size:15px;color:var(--fg-soft);
+        line-height:1.6;margin:0 0 28px;max-width:60ch}
+  .section{margin:36px 0}
+  .section-head{font-family:var(--mono);font-size:10px;letter-spacing:.36em;color:var(--gold);
+                text-transform:uppercase;margin-bottom:12px;display:flex;align-items:baseline;gap:8px}
+  .section-head .count{color:var(--gold-deep);font-size:10px}
+  /* Mint form */
+  .mint{background:var(--surface);border:1px solid var(--line-bright);border-radius:3px;
+        padding:22px 24px;display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .mint label{display:flex;flex-direction:column;gap:5px}
+  .mint label.full{grid-column:1/-1}
+  .mint label > span{font-family:var(--mono);font-size:9.5px;letter-spacing:.28em;color:var(--gold);
+                      text-transform:uppercase}
+  .mint label > span em{font-style:italic;letter-spacing:.04em;color:var(--gold-deep);
+                         text-transform:none;font-size:10.5px;margin-left:6px}
+  .mint input,.mint select{font-family:var(--mono);font-size:13px;color:var(--gold-bright);
+                            background:var(--surface-2);border:1px solid var(--line);border-radius:2px;
+                            padding:10px 12px}
+  .mint input:focus,.mint select:focus{outline:0;border-color:var(--red-warm)}
+  .mint .actions{grid-column:1/-1;display:flex;justify-content:flex-end}
+  .mint button{font-family:var(--mono);font-size:10px;letter-spacing:.32em;text-transform:uppercase;
+               background:linear-gradient(180deg,#dc2626,#9a1212);color:#f5dca3;border:1px solid #dc2626;
+               padding:10px 22px;border-radius:2px;cursor:pointer;transition:.15s}
+  .mint button:hover{transform:translateY(-1px);box-shadow:0 6px 18px -4px rgba(220,38,38,.4)}
+  .mint button:disabled{opacity:.5;cursor:wait}
+  /* Token-display modal */
+  #tokenShow{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:50;
+             padding:24px;align-items:center;justify-content:center}
+  #tokenShow.on{display:flex}
+  #tokenShow .box{background:var(--surface);border:1px solid var(--red);max-width:580px;
+                  border-radius:3px;padding:28px 30px}
+  #tokenShow h3{font-family:var(--serif);font-style:italic;color:#f5dca3;margin:0 0 8px;font-size:22px}
+  #tokenShow .warn{color:var(--red-warm);font-family:var(--mono);font-size:10px;letter-spacing:.2em;
+                    text-transform:uppercase;margin:0 0 18px}
+  #tokenShow .token{font-family:var(--mono);font-size:14px;color:var(--gold-bright);
+                     background:rgba(220,38,38,0.08);border:1px dashed var(--red);padding:14px;
+                     word-break:break-all;line-height:1.5;border-radius:2px;margin-bottom:14px}
+  #tokenShow .row{display:flex;gap:10px;justify-content:flex-end}
+  #tokenShow .row button{font-family:var(--mono);font-size:10px;letter-spacing:.28em;
+                          text-transform:uppercase;padding:9px 18px;border-radius:2px;cursor:pointer}
+  #tokenShow .copy{background:var(--surface-2);color:var(--gold);border:1px solid var(--line-bright)}
+  #tokenShow .close{background:linear-gradient(180deg,#dc2626,#9a1212);color:#f5dca3;border:1px solid #dc2626}
+  /* Table */
+  table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--line);
+        border-radius:3px;overflow:hidden}
+  th,td{padding:11px 14px;text-align:left;border-bottom:1px solid var(--line);
+        font-family:var(--mono);font-size:12px}
+  th{background:var(--surface-2);color:var(--gold-deep);font-size:9.5px;letter-spacing:.24em;
+     text-transform:uppercase;font-weight:500}
+  tr.revoked td{opacity:.45}
+  .role-admin{color:var(--red-warm);font-weight:600}
+  .role-writer{color:var(--gold-bright)}
+  .role-recall-only{color:var(--gold-deep)}
+  .role-revoked{color:var(--fg-dim);font-style:italic}
+  .ago{color:var(--gold-deep);font-size:10.5px}
+  .label-cell{font-family:var(--sans);color:var(--fg-soft);font-size:12.5px}
+  .actions-cell{text-align:right}
+  .revoke-btn{font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;
+               padding:5px 11px;background:transparent;color:var(--gold-deep);border:1px solid var(--line);
+               border-radius:2px;cursor:pointer;transition:.15s}
+  .revoke-btn:hover{color:var(--red-warm);border-color:var(--red)}
+  .revoke-btn[disabled]{opacity:.4;cursor:not-allowed}
+  .empty{text-align:center;padding:30px;color:var(--fg-dim);font-style:italic;font-family:var(--serif)}
+  /* Mobile */
+  @media(max-width:680px){
+    .mint{grid-template-columns:1fr}
+    .nav{padding:14px 18px;font-size:9.5px;letter-spacing:.22em}
+    h1{font-size:26px}
+    th,td{padding:9px 8px;font-size:11px}
+    th:nth-child(3),td:nth-child(3){display:none}
+  }
+</style></head>
+<body>
+<nav class='nav'>
+  <a href='/'><span class='brand'>Z A I</span> · memory hub</a>
+  <div><a href='/'>home</a> · <a href='/connect'>connect</a> · <a href='/trash'>trash</a> · <span style='color:var(--gold-bright)'>agents</span></div>
+</nav>
+<div class='wrap'>
+  <div class='eyebrow'>access control · roles · keys</div>
+  <h1>Agents.</h1>
+  <p class='lead'>Every agent that connects to the hub holds one bearer token.  Mint a new one for each surface (Claude.ai web, a laptop's Claude Code, Cursor, a custom Python script), give it a role, hand it off.  Revoke from here when an agent should no longer have access.</p>
+
+  <section class='section'>
+    <div class='section-head'>mint a new token</div>
+    <form class='mint' id='mintForm'>
+      <label>
+        <span>Slug <em>(stable identity, shows up on dashboard)</em></span>
+        <input type='text' id='slug' name='slug' required pattern='[a-z0-9-]+' maxlength='60' placeholder='e.g. cursor-laptop'>
+      </label>
+      <label>
+        <span>Role <em>(what this agent can do)</em></span>
+        <select id='role' name='role'>
+          <option value='writer' selected>writer — read + write, no delete</option>
+          <option value='recall-only'>recall-only — read only</option>
+          <option value='admin'>admin — full access including delete</option>
+        </select>
+      </label>
+      <label class='full'>
+        <span>Label <em>(human note: who/where this token is going)</em></span>
+        <input type='text' id='label' name='label' maxlength='120' placeholder='e.g. Cursor on the laptop'>
+      </label>
+      <div class='actions'>
+        <button type='submit' id='mintBtn'>Mint token</button>
+      </div>
+    </form>
+  </section>
+
+  <section class='section'>
+    <div class='section-head'>active tokens <span class='count' id='ttCount'>—</span></div>
+    <div id='ttArea'>loading…</div>
+  </section>
+
+  <section class='section' id='revokedSec' hidden>
+    <div class='section-head'>revoked tokens <span class='count' id='revCount'>—</span></div>
+    <div id='revArea'></div>
+  </section>
+</div>
+
+<!-- show-token modal -->
+<div id='tokenShow'>
+  <div class='box'>
+    <h3 id='tsTitle'>Your new token</h3>
+    <p class='warn'>This is the only time you'll see it. Save it now.</p>
+    <div class='token' id='tsToken'>—</div>
+    <p style='font-family:var(--mono);font-size:10.5px;color:var(--gold-deep);margin:0 0 18px;line-height:1.5'>
+      Hand this to the agent.  In Claude Code:  <span style='color:var(--gold-bright)'>claude mcp add zai-hub --transport http --url {PUBLIC_URL}/mcp --header "Authorization: Bearer &lt;token&gt;"</span>
+    </p>
+    <div class='row'>
+      <button class='copy' id='tsCopy'>Copy</button>
+      <button class='close' id='tsClose'>I've saved it</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const fmtAge = s => {
+  if (s == null) return 'never';
+  if (s < 60) return Math.floor(s)+'s';
+  if (s < 3600) return Math.floor(s/60)+'m';
+  if (s < 86400) return Math.floor(s/3600)+'h';
+  return Math.floor(s/86400)+'d';
+};
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
+
+async function load() {
+  const r = await fetch('/api/tokens');
+  if (!r.ok) { document.getElementById('ttArea').innerHTML = '<div class=empty>Failed to load.</div>'; return; }
+  const tokens = await r.json();
+  const now = Date.now();
+  const active = tokens.filter(t => !t.revoked_at);
+  const revoked = tokens.filter(t => t.revoked_at);
+  document.getElementById('ttCount').textContent = `(${active.length})`;
+  if (!active.length) {
+    document.getElementById('ttArea').innerHTML = '<div class=empty>No active tokens. Mint one above.</div>';
+  } else {
+    document.getElementById('ttArea').innerHTML = `
+      <table>
+        <thead><tr><th>slug</th><th>role</th><th>label</th><th>last used</th><th></th></tr></thead>
+        <tbody>${active.map(t => {
+          const ago = t.last_used_at ? (now - new Date(t.last_used_at).getTime())/1000 : null;
+          return `<tr data-id='${t.id}'>
+            <td><strong style='color:var(--gold-bright)'>${esc(t.slug)}</strong></td>
+            <td><span class='role-${esc(t.role)}'>${esc(t.role)}</span></td>
+            <td class='label-cell'>${esc(t.label || '—')}</td>
+            <td class='ago'>${fmtAge(ago)} ago</td>
+            <td class='actions-cell'><button class='revoke-btn' data-id='${t.id}' data-slug='${esc(t.slug)}'>Revoke</button></td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>`;
+    document.querySelectorAll('.revoke-btn').forEach(b => b.addEventListener('click', revokeToken));
+  }
+  if (revoked.length) {
+    document.getElementById('revokedSec').hidden = false;
+    document.getElementById('revCount').textContent = `(${revoked.length})`;
+    document.getElementById('revArea').innerHTML = `
+      <table>
+        <thead><tr><th>slug</th><th>role</th><th>label</th><th>revoked</th></tr></thead>
+        <tbody>${revoked.map(t => {
+          const ago = (now - new Date(t.revoked_at).getTime())/1000;
+          return `<tr class='revoked'>
+            <td>${esc(t.slug)}</td>
+            <td><span class='role-revoked'>${esc(t.role)}</span></td>
+            <td class='label-cell'>${esc(t.label || '—')}</td>
+            <td class='ago'>${fmtAge(ago)} ago</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>`;
+  }
+}
+
+async function revokeToken(ev) {
+  const btn = ev.target;
+  const id = btn.dataset.id;
+  const slug = btn.dataset.slug;
+  if (!confirm(`Revoke the token for "${slug}"?\n\nThe agent holding it will get 401 on its next MCP call. This cannot be undone (you'll need to mint a fresh one if you want to give them access again).`)) return;
+  btn.disabled = true; btn.textContent = '…';
+  const r = await fetch('/api/tokens/' + id + '/revoke', { method: 'POST' });
+  if (!r.ok) { alert('Revoke failed'); btn.disabled = false; btn.textContent = 'Revoke'; return; }
+  await load();
+}
+
+document.getElementById('mintForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const btn = document.getElementById('mintBtn');
+  btn.disabled = true; btn.textContent = 'Minting…';
+  const fd = new FormData(ev.target);
+  const r = await fetch('/api/tokens/mint', { method: 'POST', body: fd });
+  if (!r.ok) { alert('Mint failed: ' + (await r.text())); btn.disabled = false; btn.textContent = 'Mint token'; return; }
+  const d = await r.json();
+  document.getElementById('tsTitle').textContent = 'Token for ' + d.slug + ' (' + d.role + ')';
+  document.getElementById('tsToken').textContent = d.token;
+  document.getElementById('tokenShow').classList.add('on');
+  // Copy button
+  document.getElementById('tsCopy').onclick = async () => {
+    try { await navigator.clipboard.writeText(d.token); document.getElementById('tsCopy').textContent = 'Copied'; }
+    catch (e) { alert('Clipboard unavailable — select + copy manually'); }
+  };
+  ev.target.reset();
+  document.getElementById('role').value = 'writer';
+  await load();
+  btn.disabled = false; btn.textContent = 'Mint token';
+});
+
+document.getElementById('tsClose').addEventListener('click', () => {
+  document.getElementById('tokenShow').classList.remove('on');
+  document.getElementById('tsCopy').textContent = 'Copy';
+});
+
+load();
+setInterval(load, 30000);
+</script>
+</body></html>
+"""
+
+
+@app.get("/agents", response_class=HTMLResponse)
+def agents_page(request: Request):
+    if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
+        return HTMLResponse(
+            "<html><body style='font-family:monospace;padding:40px;background:#0a0508;color:#f5ecdb'>"
+            "ZAI Memory Hub — auth required. Visit <code>/login?key=YOUR_KEY</code>.</body></html>",
+            status_code=401)
+    return HTMLResponse(AGENTS_HTML, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/connect", response_class=HTMLResponse)
 def connect(request: Request):
     if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
@@ -5640,7 +6616,7 @@ def connect(request: Request):
             "<html><body style='font-family:monospace;padding:40px;background:#0a0508;color:#f5ecdb'>"
             "ZAI Memory Hub — auth required. Visit <code>/login?key=YOUR_KEY</code>.</body></html>",
             status_code=401)
-    return HTMLResponse(CONNECT_HTML.replace("{PUBLIC_URL}", PUBLIC_URL))
+    return HTMLResponse(CONNECT_HTML)
 
 
 @app.get("/universe", response_class=HTMLResponse)

@@ -32,16 +32,39 @@ The slug matters. It's how I know which agent wrote what, and it's the key for y
 All exposed via MCP, all defined in `server/hub.py`.
 
 ```
-memory.add         write a new memory, optional tags + entities + importance
-memory.recall      search by text (substring fallback until embeddings are wired)
-memory.get_recent  the latest N, optionally filtered by author or tag
-memory.delete      soft-delete a memory you wrote
-decision.log       a durable choice with rationale + alternatives
-entity.upsert      create or update an entity (project, person, thread)
-interaction.log    mark a session start or turning point
+context.bootstrap     one-call orientation when you first connect
+memory.add            write a new one-line atomic memory (~110-char headline)
+memory.add_full       save long-form content verbatim + auto-rendered PDF
+memory.recall         search by text (Voyage-backed when embeddings are wired)
+memory.get_recent     the latest N, optionally filtered by author or tag
+memory.delete         soft-delete a memory you wrote
+decision.log          a durable choice with rationale + alternatives
+entity.upsert         create or update an entity (project, person, thread)
+entity.neighborhood   walk the graph from any entity
+interaction.log       mark a session start or turning point
+chat_window.create    dump a ~500-line conversation, 10-day TTL, pinnable
+chat_window.list      list recent windows
+chat_window.get       fetch one window's full transcript
+chat_window.pin       keep past TTL (admin)
+chat_window.delete    soft-delete a window (admin)
 ```
 
-That's it. There is no `memory.edit`. There is no hard delete via MCP. There is no admin command.
+There is no `memory.edit`. There is no hard delete via MCP. There is no admin command.
+
+### When to use which write tool
+
+```
+Human's intent                              → Tool
+─────────────────────────────────────────────────────────────────────
+"remember this" / "save"                    → memory.add
+"save as is" / "with context" / "verbatim"  → memory.add_full
+"save this conversation"                    → chat_window.create
+"this is the rule going forward"            → decision.log
+"new project / concept / person"            → entity.upsert
+"I'm starting a new thread"                 → interaction.log
+```
+
+The save-with-context rule: when the human uses phrases like "as is", "with context", "proper memory mein daalo", "save all of this" — they mean preserve verbatim, don't summarize. Use `memory.add_full(title, body, attach_pdf=True)`. PDF gets rendered and linked from the memory card automatically.
 
 ## What to do as a new agent
 
@@ -83,10 +106,12 @@ The dashboard's knowledge blocks each filter on a tag set. If you want your memo
 |------------------|-------------------------------------------------------------------------------------------------------------------------------|
 | Philosophy       | philosophy, draft, idea, thought, thinking, essay, note                                                                       |
 | Hacking & CTF    | htb, ctf, pwn, exploit, recon, payload, shell, reverse, web-ex, binary, rop, buffer-overflow, rce, sqli, xss, lfi, rfi, priv-esc, pivot, active-directory |
-| Crypto & Markets | crypto, market, trade, liquidity, regime, macro, btc, eth, framework, anteroom                                                |
+| Crypto & Markets | crypto, market, trade, liquidity, regime, macro, btc, eth, framework                                                          |
 | Infrastructure   | infra, vps, mcp, systemd, pipeline, deploy, config, tech-debt, state                                                          |
 | Now Building     | milestone, ship, in-flight, ui, feature, build                                                                                |
-| Documents        | `document` (auto-added on PDF upload; don't set manually)                                                                     |
+| GitHub Projects  | `github-project` (use `scripts/build_github_projects_block.py` to populate)                                                   |
+| Documents        | `document` (auto-added by `memory.add_full` / PDF upload; don't set manually)                                                 |
+| Chats            | _(kind: chats, not tag — written by `chat_window.create`)_                                                                    |
 
 If your memory genuinely fits none of those, write it anyway with no tags. It still shows in the Timeline and recent feeds. Tags are for discoverability, not gatekeeping.
 

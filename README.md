@@ -12,19 +12,34 @@ Most "memory" features for LLM tools are scoped to one client. Claude.ai web doe
 
 This is the version of that I actually use. One Postgres, one MCP endpoint, per-agent bearer tokens with role-based access, a dashboard with a delete button. Everything is append-mostly: agents can write and soft-delete, but only the human (through the dashboard) can hard-delete. The audit log tracks every mutation.
 
-## What you get (v0.4)
+## What you get (v0.5)
 
-**MCP tools** — eight of them, all defined in `server/hub.py`:
+**MCP tools** — fourteen of them, all defined in `server/hub.py`:
+
+*Atomic writes / search*
 
 - `context.bootstrap` — one-call orientation when an agent first connects (recent decisions, recent memories, your own writes, who else is online, role-appropriate house rules).
-- `memory.add` — write a memory with tags + importance. Server-side content-similarity dedup (same author + identical content within 5 min returns the existing ID instead of duplicating). PII scanner blocks 14 credential patterns at write time.
+- `memory.add` — write a one-line atomic memory with tags + importance. Server-side content-similarity dedup. PII scanner blocks 14 credential patterns at write time.
+- `memory.add_full` — for long-form content the human wants preserved verbatim. Title + full markdown body (up to 200 KB) → auto-renders a PDF, attaches it to the memory, surfaces an "Open PDF" button + inline iframe preview on the dashboard reader. Trigger phrases the human typically uses: "save as is", "save with context", "proper save karo".
 - `memory.recall` — search by text. Returns ~200-char summaries by default; pass `full=true` for full bodies. Substring match today, semantic upgrade ready when you wire a Voyage key.
 - `memory.get_recent` — latest N memories, optionally filtered by author or tag.
 - `memory.delete` — soft, recoverable, audited. Admin-only role; hidden from writer-token tool catalogs.
+
+*Course-correction + entities*
+
 - `decision.log` — durable decisions other agents should respect, with rationale + alternatives + supersedes-chain.
 - `entity.upsert` — first-class entities (`person | project | thread | repo | location | concept | event` — server-enforced enum). Memories attach to entities.
 - `entity.neighborhood` — walk the knowledge graph from any entity. Returns memories + decisions + co-occurring entities for that node.
 - `interaction.log` — mark session start, end, or turning point so concurrent agents see who's working on what.
+
+*Ephemeral chat capture*
+
+- `chat_window.create` — dump a recent conversation transcript (≤600 lines / 64 KB, tail-preserved) as an ephemeral window with a 10-day TTL. Useful when the human says "save this chat".
+- `chat_window.list` / `chat_window.get` — list and fetch full transcripts.
+- `chat_window.pin` — keep a window past its TTL (admin).
+- `chat_window.delete` — soft-delete a window (admin).
+
+A daily cleanup cron soft-deletes expired, unpinned chat windows.
 
 **Auth model** — per-agent tokens in a Postgres table, each bound to one **slug** + one **role**:
 
@@ -42,9 +57,25 @@ The server stamps every write's `written_by` from the token row. **Clients canno
 - `/graph` and `/graph/<entity>` — entity-centric knowledge graph exploration
 - `/agents` — mint, list, revoke per-agent tokens. Phone-friendly.
 - `/trash` — soft-deleted memories + restore button + full audit log
-- `/universe` — three.js orb cloud of all memories
 - `/connect` — connection wizard with copy-paste configs for popular MCP clients
 - `/health` — public status probe (no auth) for graceful client-side degradation
+
+**Blocks** ship with sensible defaults. Each is just a tag set the dashboard groups; edit `BLOCKS` in `dashboard/app.py` to add your own.
+
+| Block | Tags it groups | What goes there |
+|-------|----------------|------------------|
+| Philosophy | `philosophy`, `essay`, `thought` | Long-form reflections |
+| Hacking & CTF | `htb`, `ctf`, `pwn`, `exploit`, … | Writeups, payloads, recon notes |
+| Crypto & Markets | `crypto`, `market`, `regime`, `liquidity` | Trading thinking |
+| Infrastructure | `infra`, `vps`, `mcp`, `systemd`, `pipeline` | System / deployment notes |
+| Now Building | `milestone`, `ship`, `in-flight`, `feature` | Current shipping work |
+| Decisions | _(kind: decisions)_ | `decision_log` entries |
+| References | _(kind: entities)_ | Entity-card view |
+| Chats | _(kind: chats)_ | Ephemeral chat windows (10-day TTL) |
+| Tool Calls | _(kind: tools)_ | Recent MCP invocations |
+| GitHub Projects | `github-project` | Your repo portfolio (see `scripts/build_github_projects_block.py`) |
+
+**Bring your own knowledge** — the GitHub Projects example shipped in `scripts/`. Run once and your public + private repos (with READMEs + topics + language + visibility) all become recall-able memories. A `~/.github_projects_state.json` fingerprint tracks the last `pushed_at`, so re-runs only re-push repos that actually changed. Adapt the same pattern for any data source (Linear tickets, Notion pages, your reading list).
 
 **Off-site backups** — nightly Postgres dump + uploaded PDFs mirror to Backblaze B2 (server-side AES-256 encryption by default). The whole hub also has an `/api/export` endpoint that streams everything as one JSON file you can take to any other Hub install.
 
@@ -176,9 +207,10 @@ UUIDs are preserved, so foreign-key references survive. `agent_tokens` come alon
 
 In rough order:
 
-- **Semantic recall** via Voyage embeddings. Substring search works up to a few hundred memories; beyond that, relevance falls off. The plumbing is ready, just needs the key.
+- **Semantic recall** via Voyage embeddings. Plumbed in v0.5; just point `VOYAGE_TOKEN_PATH` at a key file and writes start getting embedded. ivfflat cosine index over pgvector.
 - **Read-only public-share mode** for individual memories (signed URL, time-boxed).
-- **Tiny CLI** (`zai-hub recall "what was that thing about..."`) for one-shot terminal queries without MCP.
+- **Tiny CLI** (`zai-hub recall "what was that thing about..."`) for one-shot terminal queries without MCP — already in `scripts/cli.py`.
+- **Source ingesters** for the common cases — RSS, Linear, Notion, GitHub Issues — built on the same pattern as `scripts/build_github_projects_block.py`.
 
 If you fork this and add something useful, send a PR.
 

@@ -19,4 +19,4 @@ pypdf>=4.0
 qrcode[pil]>=7.4
 
 # Off-site backup (optional but recommended)
-b2sdk>=2.0
+b2sdk>=2.12.0

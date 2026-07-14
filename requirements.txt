@@ -16,7 +16,7 @@ psycopg[binary]>=3.1
 pypdf>=4.0
 
 # QR codes (agent-token bootstrap page)
-qrcode[pil]>=7.4
+qrcode[pil]>=8.2
 
 # Off-site backup (optional but recommended)
 b2sdk>=2.0

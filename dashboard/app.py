@@ -588,21 +588,35 @@ def oauth_authorize(request: Request,
     (cookie auth) — that's how we know it's actually them and not a
     drive-by approving on their behalf."""
     if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
-        # Bounce through /login first; preserve the full authorize URL
-        from urllib.parse import urlencode, quote
+        # Owner login inline: never put the dashboard key in the URL/history.
+        from urllib.parse import urlencode
+        from html import escape
         params = {"response_type": response_type, "client_id": client_id,
                   "redirect_uri": redirect_uri, "scope": scope, "state": state,
                   "resource": resource,
                   "code_challenge": code_challenge,
                   "code_challenge_method": code_challenge_method}
         target = "/oauth/authorize?" + urlencode(params)
-        return HTMLResponse(
-            f"<html><body style='font-family:monospace;padding:40px;background:#0a0508;color:#f5ecdb;line-height:1.7'>"
-            f"<h1 style='font-family:Georgia,serif;font-style:italic;color:#e8d49a'>One step.</h1>"
-            f"<p>Log into the dashboard first, then this consent screen will work.</p>"
-            f"<p><a href='/login?key=YOUR_KEY&next={quote(target)}' style='color:#dc2626'>→ /login?key=YOUR_KEY&next=…</a></p>"
-            f"<p style='color:#8b6a5a;font-size:13px'>(replace YOUR_KEY with your dashboard key)</p></body></html>",
-            status_code=401)
+        return HTMLResponse(f"""<!doctype html>
+<html><head><meta charset='utf-8'><title>Owner login · ZAI Memory Hub</title>
+<style>
+body{{font-family:Georgia,serif;background:#0a0508;color:#f5ecdb;min-height:100vh;display:grid;place-items:center;margin:0;padding:24px}}
+.card{{max-width:480px;width:100%;border:1px solid #5c3d20;background:rgba(20,8,10,.9);padding:32px;border-radius:4px}}
+h1{{font-style:italic;color:#f5dca3}} label{{display:block;font-family:monospace;color:#c4924a;margin:18px 0 6px}}
+input{{width:100%;box-sizing:border-box;padding:11px;background:#10080b;color:#f5ecdb;border:1px solid #5c3d20}}
+button{{margin-top:18px;width:100%;padding:11px;background:#b91c1c;color:#fff;border:0;cursor:pointer}}
+small{{color:#8b7c68}}
+</style></head><body><div class='card'>
+<h1>Owner approval.</h1>
+<p>Enter your ZAI Memory Hub dashboard key to continue the OAuth consent flow.</p>
+<form method='post' action='/oauth/owner-login'>
+<input type='hidden' name='next' value='{escape(target)}'>
+<label>Dashboard key</label>
+<input type='password' name='key' autocomplete='current-password' required autofocus>
+<button type='submit'>Continue to authorization</button>
+</form>
+<p><small>The key is submitted by POST and is not stored in the URL.</small></p>
+</div></body></html>""", status_code=401)
     expected_resource = f"{PUBLIC_URL}/mcp"
     if resource and resource != expected_resource:
         raise HTTPException(400, "resource mismatch")
@@ -701,6 +715,22 @@ def _render_consent_screen(client_name, client_id, redirect_uri, scope, state,
   </form>
 </div></body></html>
 """
+
+
+@app.post("/oauth/owner-login")
+async def oauth_owner_login(key: str = Form(...), next: str = Form(...)):
+    """Authenticate the Hub owner for OAuth without exposing the dashboard key in a URL."""
+    if not secrets.compare_digest(key, DASHBOARD_KEY):
+        return HTMLResponse(
+            "<html><body style='font-family:monospace;padding:40px;background:#0a0508;color:#f5ecdb'>"
+            "<h2>Invalid dashboard key.</h2><p>Go back and try again.</p></body></html>",
+            status_code=401)
+    if not next.startswith("/oauth/authorize?"):
+        raise HTTPException(400, "invalid return target")
+    r = RedirectResponse(url=next, status_code=303)
+    r.set_cookie(COOKIE_NAME, DASHBOARD_KEY, max_age=60*60*24*30,
+                 httponly=True, samesite="lax", secure=True, path="/")
+    return r
 
 
 @app.post("/oauth/authorize/approve")

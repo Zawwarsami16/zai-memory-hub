@@ -9,14 +9,10 @@ hub.example.com {
     encode gzip
 
     route {
-        # Gate /mcp* on the bearer token at the edge.  Backend never sees
-        # unauthorised requests.
-        @mcp_no_token {
-            path /mcp*
-            not header Authorization "Bearer YOUR_AGENT_TOKEN_HERE"
-        }
-        respond @mcp_no_token "Unauthorized — bearer token required" 401
-
+        # Do not hard-code one bearer token at the proxy layer.
+        # FastMCP validates per-agent / OAuth-minted tokens against Postgres
+        # and can return the WWW-Authenticate challenge ChatGPT needs for
+        # OAuth discovery and re-authorization.
         handle /mcp* {
             reverse_proxy 127.0.0.1:8765 {
                 flush_interval -1   # streamable-HTTP needs no buffering

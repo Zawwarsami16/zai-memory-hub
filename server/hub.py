@@ -115,7 +115,7 @@ class AgentTokenVerifier(TokenVerifier):
             client_id=row["slug"],
             scopes=scopes,
             expires_at=None,
-            resource=None,
+            resource=f"{PUBLIC_URL}/mcp",
             claims={"slug": row["slug"], "role": row["role"], "label": row["label"] or ""},
         )
 

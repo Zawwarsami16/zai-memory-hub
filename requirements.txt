@@ -20,3 +20,6 @@ qrcode[pil]>=7.4
 
 # Off-site backup (optional but recommended)
 b2sdk>=2.0
+
+# GitHub-backed free Render adapter
+httpx>=0.27

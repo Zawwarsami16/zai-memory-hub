@@ -126,17 +126,44 @@ def upsert_interactions(cx, rows):
     return n
 
 
-def append_audit(cx, rows):
+def upsert_audit(cx, rows):
     n = 0
     with cx.cursor() as cu:
         for r in rows:
             cu.execute(
-                "INSERT INTO audit_log(target_kind, target_id, action, actor, detail, created_at) "
-                "VALUES (%s, %s, %s, %s, %s::jsonb, %s)",
-                (r["target_kind"], r["target_id"], r["action"], r.get("actor"),
+                "INSERT INTO audit_log(id, target_kind, target_id, action, actor, detail, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s) "
+                "ON CONFLICT (id) DO NOTHING",
+                (r["id"], r["target_kind"], r["target_id"], r["action"], r.get("actor"),
                  json.dumps(r.get("detail") or {}), r.get("created_at")))
             n += cu.rowcount
     return n
+
+
+def upsert_tool_calls(cx, rows):
+    n = 0
+    with cx.cursor() as cu:
+        for r in rows:
+            cu.execute(
+                "INSERT INTO tool_calls(id, tool_name, args, result_brief, called_by, session_id, "
+                "duration_ms, status, error, created_at) "
+                "VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (id) DO NOTHING",
+                (r["id"], r["tool_name"], json.dumps(r.get("args") or {}),
+                 r.get("result_brief"), r["called_by"], r.get("session_id"),
+                 r.get("duration_ms"), r.get("status") or "ok", r.get("error"),
+                 r.get("created_at")))
+            n += cu.rowcount
+    return n
+
+
+def advance_sequences(cx):
+    with cx.cursor() as cu:
+        for table in ("audit_log", "tool_calls"):
+            cu.execute(
+                f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), "
+                f"GREATEST(COALESCE((SELECT MAX(id) FROM {table}), 1), 1), true)"
+            )
 
 
 with psycopg.connect(DSN, row_factory=dict_row, autocommit=False) as cx:
@@ -148,8 +175,11 @@ with psycopg.connect(DSN, row_factory=dict_row, autocommit=False) as cx:
     print(f"[import] decisions  +{d}")
     i = upsert_interactions(cx, blob.get("interactions", []))
     print(f"[import] interactions +{i}")
-    a = append_audit(cx, blob.get("audit_log", []))
+    a = upsert_audit(cx, blob.get("audit_log", []))
     print(f"[import] audit_log  +{a}")
+    t = upsert_tool_calls(cx, blob.get("tool_calls", []))
+    print(f"[import] tool_calls +{t}")
+    advance_sequences(cx)
     cx.commit()
 
 print("[import] done.")

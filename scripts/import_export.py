@@ -61,7 +61,9 @@ def upsert_entities(cx, rows):
             cu.execute(
                 "INSERT INTO entities(id, slug, kind, display, metadata, created_at, updated_at) "
                 "VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s) "
-                "ON CONFLICT (id) DO NOTHING",
+                "ON CONFLICT (slug) DO UPDATE SET "
+                "kind = EXCLUDED.kind, display = EXCLUDED.display, "
+                "metadata = EXCLUDED.metadata, updated_at = EXCLUDED.updated_at",
                 (r["id"], r["slug"], r["kind"], r["display"],
                  json.dumps(r.get("metadata") or {}),
                  r.get("created_at"), r.get("updated_at")))

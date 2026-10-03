@@ -508,12 +508,13 @@ def oauth_metadata():
     where the endpoints live and what grants we support."""
     return JSONResponse({
         "issuer": PUBLIC_URL,
+        "authorization_response_iss_parameter_supported": True,
         "authorization_endpoint": f"{PUBLIC_URL}/oauth/authorize",
         "token_endpoint": f"{PUBLIC_URL}/oauth/token",
         "registration_endpoint": f"{PUBLIC_URL}/oauth/register",
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code"],
-        "code_challenge_methods_supported": ["S256", "plain"],
+        "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
         "scopes_supported": ["mcp:read", "mcp:write", "mcp:delete"],
         "service_documentation": f"{PUBLIC_URL}/connect",
@@ -521,6 +522,7 @@ def oauth_metadata():
 
 
 @app.get("/.well-known/oauth-protected-resource")
+@app.get("/.well-known/oauth-protected-resource/mcp")
 def oauth_resource_metadata():
     """RFC 9728 — tells clients which auth server protects this resource."""
     return JSONResponse({
@@ -579,6 +581,7 @@ def oauth_authorize(request: Request,
                     redirect_uri: str = "",
                     scope: str = "mcp:read mcp:write",
                     state: str = "",
+                    resource: str = "",
                     code_challenge: str = "",
                     code_challenge_method: str = "S256"):
     """Consent screen.  User must already be logged into the dashboard
@@ -589,6 +592,7 @@ def oauth_authorize(request: Request,
         from urllib.parse import urlencode, quote
         params = {"response_type": response_type, "client_id": client_id,
                   "redirect_uri": redirect_uri, "scope": scope, "state": state,
+                  "resource": resource,
                   "code_challenge": code_challenge,
                   "code_challenge_method": code_challenge_method}
         target = "/oauth/authorize?" + urlencode(params)
@@ -599,6 +603,9 @@ def oauth_authorize(request: Request,
             f"<p><a href='/login?key=YOUR_KEY&next={quote(target)}' style='color:#dc2626'>→ /login?key=YOUR_KEY&next=…</a></p>"
             f"<p style='color:#8b6a5a;font-size:13px'>(replace YOUR_KEY with your dashboard key)</p></body></html>",
             status_code=401)
+    expected_resource = f"{PUBLIC_URL}/mcp"
+    if resource and resource != expected_resource:
+        raise HTTPException(400, "resource mismatch")
     # Look up the client
     with db() as cx, cx.cursor() as cu:
         cu.execute("SELECT client_name, redirect_uris FROM oauth_clients WHERE client_id = %s",
@@ -621,6 +628,7 @@ def oauth_authorize(request: Request,
         redirect_uri=redirect_uri,
         scope=scope,
         state=state,
+        resource=resource or expected_resource,
         code_challenge=code_challenge,
         code_challenge_method=code_challenge_method,
         slug_suggest=slug_suggest,
@@ -629,7 +637,7 @@ def oauth_authorize(request: Request,
 
 
 def _render_consent_screen(client_name, client_id, redirect_uri, scope, state,
-                            code_challenge, code_challenge_method, slug_suggest, role):
+                            resource, code_challenge, code_challenge_method, slug_suggest, role):
     from html import escape
     return f"""<!doctype html>
 <html><head><meta charset='utf-8'><title>Authorize · ZAI Memory Hub</title>
@@ -680,6 +688,7 @@ def _render_consent_screen(client_name, client_id, redirect_uri, scope, state,
     <input type='hidden' name='redirect_uri' value='{escape(redirect_uri)}'>
     <input type='hidden' name='scope' value='{escape(scope)}'>
     <input type='hidden' name='state' value='{escape(state)}'>
+    <input type='hidden' name='resource' value='{escape(resource)}'>
     <input type='hidden' name='code_challenge' value='{escape(code_challenge)}'>
     <input type='hidden' name='code_challenge_method' value='{escape(code_challenge_method)}'>
     <input type='hidden' name='role' value='{escape(role)}'>
@@ -701,6 +710,7 @@ async def oauth_authorize_approve(
     redirect_uri: str = Form(...),
     scope: str = Form(""),
     state: str = Form(""),
+    resource: str = Form(""),
     code_challenge: str = Form(""),
     code_challenge_method: str = Form("S256"),
     slug: str = Form(...),
@@ -710,9 +720,13 @@ async def oauth_authorize_approve(
     if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
         raise HTTPException(401, "dashboard auth required")
     from urllib.parse import urlencode
+    expected_resource = f"{PUBLIC_URL}/mcp"
+    if resource and resource != expected_resource:
+        raise HTTPException(400, "resource mismatch")
     if action != "approve":
+        params = {"error": "access_denied", "state": state, "iss": PUBLIC_URL}
         return RedirectResponse(
-            redirect_uri + "?" + urlencode({"error": "access_denied", "state": state}),
+            redirect_uri + "?" + urlencode(params),
             status_code=302)
     # Issue an auth code
     code = secrets.token_urlsafe(32)
@@ -728,7 +742,7 @@ async def oauth_authorize_approve(
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (code, client_id, redirect_uri, code_challenge or None,
              code_challenge_method or None, scope, slug_clean, role_clean, expires_iso))
-    params = {"code": code}
+    params = {"code": code, "iss": PUBLIC_URL}
     if state:
         params["state"] = state
     return RedirectResponse(redirect_uri + "?" + urlencode(params), status_code=302)
@@ -743,6 +757,10 @@ async def oauth_token(request: Request):
     redirect_uri = form.get("redirect_uri")
     client_id = form.get("client_id")
     code_verifier = form.get("code_verifier")
+    resource = form.get("resource")
+    expected_resource = f"{PUBLIC_URL}/mcp"
+    if resource and resource != expected_resource:
+        return JSONResponse({"error": "invalid_target", "error_description": "resource mismatch"}, status_code=400)
     if grant_type != "authorization_code":
         return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
     if not (code and redirect_uri and client_id):
@@ -786,6 +804,7 @@ async def oauth_token(request: Request):
         "access_token": access_token,
         "token_type": "Bearer",
         "scope": row["scope"] or "mcp:read mcp:write",
+        "resource": expected_resource,
     })
 
 

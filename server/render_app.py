@@ -5,6 +5,14 @@ to split /mcp to FastMCP and everything else to the FastAPI dashboard.  This
 entrypoint mounts FastMCP inside the existing dashboard FastAPI app so both
 surfaces share one Render hostname.
 """
+import os
+
+# On managed hosting, restore the database automatically once a managed
+# DATABASE_URL/ZAI_HUB_DSN has been attached. The bootstrap is idempotent.
+if os.environ.get("ZAI_HUB_DSN") or os.environ.get("DATABASE_URL"):
+    from scripts.render_bootstrap import main as _bootstrap
+    _bootstrap()
+
 from dashboard.app import app
 from server.hub import mcp
 

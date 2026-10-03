@@ -114,15 +114,12 @@ def seed_admin() -> None:
 def main() -> None:
     apply_migrations()
     n = memory_count()
-    if n == 0:
-        print("[bootstrap] empty database; restoring private snapshot", flush=True)
-        p = fetch_recovery_snapshot()
-        try:
-            import_snapshot(p)
-        finally:
-            p.unlink(missing_ok=True)
-    else:
-        print(f"[bootstrap] database already contains {n} memories; skipping snapshot import", flush=True)
+    print(f"[bootstrap] database currently contains {n} memories; syncing recovery snapshot idempotently", flush=True)
+    p = fetch_recovery_snapshot()
+    try:
+        import_snapshot(p)
+    finally:
+        p.unlink(missing_ok=True)
     seed_admin()
     print("[bootstrap] ready", flush=True)
 

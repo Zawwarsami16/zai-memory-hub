@@ -959,6 +959,13 @@ def api_agents(_: None = Depends(require_auth)):
 # or other heuristics.  Every block answers /api/block/{slug} the same
 # way: { block: {...}, items: [...] }.
 BLOCKS = {
+    "zawwar-milestones": {
+        "label": "Zawwar Milestones",
+        "sub": "Shipped · published · research · public record",
+        "kind": "milestones",
+        "tags": ["zawwar-milestone"],
+        "accent": "#f5dca3",
+    },
     "philosophy": {
         "label": "Philosophy & Drafts",
         "sub": "Longer thinking, ideas, drafts",
@@ -1004,13 +1011,6 @@ BLOCKS = {
         "sub": "Current ship · milestones",
         "tags": ["milestone", "ship", "in-flight", "ui", "feature", "build"],
         "accent": "#ff5046",
-    },
-    "zawwar-milestones": {
-        "label": "Zawwar Milestones",
-        "sub": "Shipped · published · research · public record",
-        "kind": "milestones",
-        "tags": ["zawwar-milestone"],
-        "accent": "#f5dca3",
     },
     "tools": {
         "label": "Tool Calls",
@@ -5267,6 +5267,42 @@ code{font-family:var(--mono);font-size:.85em;background:rgba(220,38,38,0.08);pad
 .rm-empty-sub{font-family:var(--sans);font-size:13px;color:var(--fg-dim);margin-bottom:14px}
 .rm-empty-tags{display:flex;flex-wrap:wrap;justify-content:center;gap:6px}
 .rm-empty-tags .tag{font-family:var(--mono);font-size:10px;padding:3px 9px;background:rgba(220,38,38,0.06);border:1px solid var(--line-bright);color:var(--fg-dim);border-radius:99px}
+
+/* ===== ZAWWAR MILESTONES ===== */
+.block[data-slug="zawwar-milestones"]{border-color:rgba(245,220,163,.34);box-shadow:inset 0 0 0 1px rgba(245,220,163,.035)}
+.block[data-slug="zawwar-milestones"] .block-body{background:linear-gradient(180deg,rgba(245,220,163,.025),transparent)}
+.ms-card-preview{list-style:none;display:flex;flex-direction:column;margin-top:4px;padding-left:13px;position:relative}
+.ms-card-preview:before{content:'';position:absolute;left:3px;top:7px;bottom:7px;width:1px;background:linear-gradient(var(--accent),rgba(245,220,163,.08))}
+.ms-card-preview li{display:grid;grid-template-columns:66px 1fr;gap:9px;position:relative;padding:5px 0;color:var(--fg-soft)}
+.ms-card-preview li:before{content:'';position:absolute;left:-13px;top:11px;width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 7px rgba(245,220,163,.5)}
+.ms-card-date{font-family:var(--mono);font-size:9px;letter-spacing:.05em;color:var(--gold-deep);text-transform:uppercase}
+.ms-card-title{font-family:var(--sans);font-size:12.5px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ms-timeline{max-width:980px;width:100%;margin:0 auto;padding:0 60px 90px}
+.ms-year{margin-top:8px}
+.ms-year-head{display:flex;align-items:center;gap:14px;margin:28px 0 14px}
+.ms-year-label{font-family:var(--serif-soft);font-style:italic;font-size:32px;color:var(--gold-bright)}
+.ms-year-line{height:1px;flex:1;background:linear-gradient(90deg,var(--gold-deep),transparent)}
+.ms-month{display:grid;grid-template-columns:110px minmax(0,1fr);gap:22px;margin-bottom:24px}
+.ms-month-label{font-family:var(--mono);font-size:10px;letter-spacing:.28em;text-transform:uppercase;color:var(--gold-deep);padding-top:13px;text-align:right}
+.ms-month-items{position:relative;padding-left:25px;border-left:1px solid var(--line-bright)}
+.ms-item{position:relative;padding:10px 0 22px;cursor:pointer}
+.ms-item:before{content:'';position:absolute;left:-30px;top:17px;width:9px;height:9px;border-radius:50%;background:var(--gold);border:2px solid var(--bg);box-shadow:0 0 0 1px var(--gold-deep),0 0 10px rgba(245,220,163,.35)}
+.ms-item-date{font-family:var(--mono);font-size:9px;letter-spacing:.16em;color:var(--gold-deep);text-transform:uppercase;margin-bottom:5px}
+.ms-item-title{font-family:var(--serif-soft);font-style:italic;font-size:20px;line-height:1.25;color:var(--gold);margin-bottom:7px}
+.ms-item-text{font-family:var(--sans);font-size:13.5px;line-height:1.65;color:var(--fg-soft);max-width:760px}
+.ms-item-links{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}
+.ms-item-link{font-family:var(--mono);font-size:9px;letter-spacing:.08em;padding:4px 8px;border:1px solid var(--line-bright);color:var(--gold-deep);border-radius:99px;transition:.15s}
+.ms-item-link:hover{color:var(--gold-bright);border-color:var(--gold-deep)}
+.ms-empty{max-width:760px;margin:0 auto;padding:40px 60px 90px;font-family:var(--serif-soft);font-style:italic;color:var(--fg-dim)}
+@media (max-width:760px){
+  .ms-timeline{padding:0 22px 70px}
+  .ms-year-label{font-size:26px}
+  .ms-month{grid-template-columns:1fr;gap:4px}
+  .ms-month-label{text-align:left;padding:0 0 4px 1px}
+  .ms-month-items{margin-left:5px}
+  .ms-item-title{font-size:18px}
+  .ms-card-preview li{grid-template-columns:58px 1fr}
+}
 
 /* ===== MEMORY READER (nested inside room or standalone) ===== */
 .reader{position:fixed;top:0;right:0;bottom:0;width:540px;max-width:96vw;z-index:90;background:linear-gradient(180deg,var(--surface) 0%,var(--bg) 100%);border-left:1px solid var(--gold-deep);box-shadow:-30px 0 80px -20px rgba(220,38,38,0.45);transform:translateX(100%);transition:transform .4s cubic-bezier(.22,.61,.36,1);overflow-y:auto;padding:40px 30px 50px}

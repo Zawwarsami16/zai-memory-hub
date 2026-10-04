@@ -617,6 +617,17 @@ async function openBlockRoom(slug){
         </div>
       </li>`;
     }
+    if (it.kind === 'repo_timeline'){
+      return `<li class="rm-card repo-timeline" data-mid="${esc(it.id)}">
+        <div class="rm-i">→</div>
+        <div class="rm-card-body">
+          <div class="rm-card-meta">${esc(formatMilestoneDate(it.milestone_date))} · ${esc((it.repo_visibility||'unknown').toUpperCase())} · REPOSITORY</div>
+          <div class="rm-card-title">${esc(it.title || 'Repository')}</div>
+          <div class="rm-card-text">${esc(trunc(it.preview || '', 420))}</div>
+          ${it.repo_url ? `<div class="rm-alts"><a class="tag rm-link" href="${esc(it.repo_url)}" target="_blank" rel="noopener">open repo ↗</a></div>` : ''}
+        </div>
+      </li>`;
+    }
     if (it.kind === 'memory'){
       return `<li class="rm-card" data-mid="${esc(it.id)}">
         <div class="rm-i">→</div>

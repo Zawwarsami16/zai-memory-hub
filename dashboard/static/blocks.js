@@ -22,6 +22,7 @@ const BLOCK_HERO = {
   'decisions':    '/static/gen/cat_planning.jpg',
   'references':   '/static/gen/lib_hero_archive.jpg',
   'now-building': '/static/gen/cat_coding.jpg',
+  'zawwar-milestones': '/static/gen/lib_hero_archive.jpg',
   'tools':        '/static/gen/cat_web.jpg',
 };
 // Hover micro-loops — only some blocks have a generated video; others
@@ -46,6 +47,18 @@ function timeAgo(iso){
   if (d < 86400*7) return Math.floor(d/86400) + 'd ago';
   return new Date(iso).toLocaleDateString('en-CA', {month:'short', day:'numeric'});
 }
+function formatMilestoneDate(iso){
+  if (!iso) return 'date unknown';
+  const d = new Date(iso + 'T00:00:00');
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString('en-CA', {year:'numeric', month:'short', day:'numeric'});
+}
+function milestoneUrls(text){
+  const raw = String(text || '').match(/https?:\/\/[^\s<>"')\]]+/g) || [];
+  const clean = raw.map(u => u.replace(/[.,;:!?]+$/g, ''));
+  return [...new Set(clean)].slice(0, 4);
+}
+
 function avatarFor(slug){
   if (ACTOR_IMG[slug]) return ACTOR_IMG[slug];
   // Procedural avatar — coloured gradient with first letter
@@ -589,6 +602,18 @@ async function openBlockRoom(slug){
   const b = data.block;
   const heroUrl = BLOCK_HERO[slug] || '';
   const renderItem = (it) => {
+    if (it.kind === 'milestone'){
+      const links = milestoneUrls(it.full || it.preview || '');
+      return `<li class="rm-card milestone" data-mid="${esc(it.id)}">
+        <div class="rm-i">◆</div>
+        <div class="rm-card-body">
+          <div class="rm-card-meta">${esc(formatMilestoneDate(it.milestone_date))} · ${esc((it.written_by||'').replace('-claude','').toUpperCase())}</div>
+          <div class="rm-card-title">${esc(it.title || 'Milestone')}</div>
+          <div class="rm-card-text">${esc(trunc(it.full || it.preview || '', 420))}</div>
+          ${links.length ? `<div class="rm-alts">${links.map((u,i) => `<a class="tag rm-link" href="${esc(u)}" target="_blank" rel="noopener">source ${i+1} ↗</a>`).join(' ')}</div>` : ''}
+        </div>
+      </li>`;
+    }
     if (it.kind === 'memory'){
       return `<li class="rm-card" data-mid="${esc(it.id)}">
         <div class="rm-i">→</div>
@@ -646,6 +671,7 @@ async function openBlockRoom(slug){
       </div>
     `}
   `;
+  body.querySelectorAll('.rm-link').forEach(el => el.addEventListener('click', (e) => e.stopPropagation()));
   body.querySelectorAll('.rm-card[data-mid]').forEach(el => el.addEventListener('click', () => openMemory(el.dataset.mid)));
 }
 function closeRoom(){ document.getElementById('room').classList.remove('open'); }

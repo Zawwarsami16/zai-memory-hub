@@ -1005,6 +1005,13 @@ BLOCKS = {
         "tags": ["milestone", "ship", "in-flight", "ui", "feature", "build"],
         "accent": "#ff5046",
     },
+    "zawwar-milestones": {
+        "label": "Zawwar Milestones",
+        "sub": "Shipped · published · research · public record",
+        "kind": "milestones",
+        "tags": ["zawwar-milestone"],
+        "accent": "#f5dca3",
+    },
     "tools": {
         "label": "Tool Calls",
         "sub": "Recent MCP tool invocations",
@@ -1020,7 +1027,48 @@ def _block_count_and_items(slug):
         return None
     with db() as cx, cx.cursor() as cu:
         kind = block.get("kind")
-        if kind == "decisions":
+        if kind == "milestones":
+            # Milestones are ordinary append-mostly memories with a strict tag
+            # convention.  The event date lives in milestone-date-YYYY-MM-DD so
+            # historical entries sort by when they actually happened, not by
+            # when an agent happened to add them to the Hub.
+            cu.execute(
+                "SELECT count(*)::int AS n FROM memories "
+                "WHERE deleted_at IS NULL AND 'zawwar-milestone' = ANY(tags)")
+            n = cu.fetchone()["n"]
+            cu.execute("""
+                WITH milestone_rows AS (
+                    SELECT id::text, content, tags, written_by, importance, created_at,
+                           COALESCE(
+                               (
+                                   SELECT substring(t from '^milestone-date-([0-9]{4}-[0-9]{2}-[0-9]{2})$')::date
+                                   FROM unnest(tags) AS t
+                                   WHERE t ~ '^milestone-date-[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                                   LIMIT 1
+                               ),
+                               created_at::date
+                           ) AS milestone_date
+                    FROM memories
+                    WHERE deleted_at IS NULL
+                      AND 'zawwar-milestone' = ANY(tags)
+                )
+                SELECT * FROM milestone_rows
+                ORDER BY milestone_date DESC, created_at DESC
+                LIMIT 100
+            """)
+            items = []
+            for r in cu.fetchall():
+                headline = ((r["content"] or "").splitlines() or ["Milestone"])[0].strip()
+                items.append({
+                    "id": r["id"], "title": headline[:180],
+                    "preview": r["content"], "full": r["content"],
+                    "written_by": r["written_by"],
+                    "created_at": r["created_at"].isoformat(),
+                    "milestone_date": r["milestone_date"].isoformat(),
+                    "tags": r["tags"] or [], "importance": r["importance"] or 3,
+                    "kind": "milestone",
+                })
+        elif kind == "decisions":
             cu.execute("SELECT count(*)::int AS n FROM decisions")
             n = cu.fetchone()["n"]
             cu.execute(

@@ -188,6 +188,8 @@ Examples of standing context include:
 
 Never place passwords, API keys, private tokens, or other credentials in Chat Ledger.
 
+If Zawwar explicitly says to **update the existing Chat Ledger entry and not create a new entry**, preserve the append-mostly model: write one hidden `chat-ledger-revision` memory containing the complete revised entry, tag it with `chat-ledger-target:<base-memory-uuid>`, and do **not** add `chat-ledger` to that revision. The Chat Ledger UI resolves the newest targeted revision into the original visible row, so the human sees one updated chat entry while audit history remains intact.
+
 ## Quality bar
 
 A few rules that keep the hub from becoming noise:

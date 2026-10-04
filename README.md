@@ -70,6 +70,7 @@ The server stamps every write's `written_by` from the token row. **Clients canno
 | Infrastructure | `infra`, `vps`, `mcp`, `systemd`, `pipeline` | System / deployment notes |
 | Now Building | `milestone`, `ship`, `in-flight`, `feature` | Current shipping work |
 | Zawwar Timeline | `github-project` + `zawwar-milestone-canonical` | All indexed public/private repos plus papers and public ships, chronologically ordered |
+| Chat Ledger | `chat-ledger` + `chat-standing-rule` | Structured cross-chat summaries plus durable interpretation/working rules |
 | Decisions | _(kind: decisions)_ | `decision_log` entries |
 | References | _(kind: entities)_ | Entity-card view |
 | Chats | _(kind: chats)_ | Ephemeral chat windows (10-day TTL) |

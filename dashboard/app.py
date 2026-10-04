@@ -1061,6 +1061,8 @@ def _block_count_and_items(slug):
                   created_at DESC
                 LIMIT 120
             """)
+            base_rows = cu.fetchall()
+
             # Ledger revisions are append-only overlays. They never create a second
             # visible chat row: the newest revision targeted at a base chat memory
             # replaces that row's displayed/read content while preserving history.
@@ -1082,7 +1084,7 @@ def _block_count_and_items(slug):
                     revisions[target] = rr
 
             items = []
-            for r in cu.fetchall():
+            for r in base_rows:
                 content = r["content"] or ""
                 lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
                 tags = r["tags"] or []

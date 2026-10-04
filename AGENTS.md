@@ -142,7 +142,7 @@ Links:
 Evidence/status: <verified current / historical verified / user-reported>
 ```
 
-Do not add plans, aspirations, routine commits, vanity metrics, recovery/migration work, maintenance, UI tweaks, internal version bumps, or unverified claims. If the date is only known to month precision, use the best verified day only when evidence supports it; otherwise do not invent a date. Corrections are append-only: write a new milestone memory naming the prior UUID and explaining the correction.
+Do not add plans, aspirations, routine commits, vanity metrics, recovery/migration work, maintenance, UI tweaks, internal version bumps, or unverified claims. If the date is only known to month precision, use the best verified day only when evidence supports it; otherwise do not invent a date. Corrections are append-only but must not create a duplicate visible milestone: write one hidden `zawwar-milestone-revision` memory containing the complete corrected milestone, tag it with `zawwar-milestone-target:<base-memory-uuid>`, and do **not** add `zawwar-milestone-canonical` to the revision. The Timeline UI resolves the newest targeted revision into the original visible row while preserving audit history.
 
 ### Chat Ledger convention
 

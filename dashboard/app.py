@@ -1173,9 +1173,38 @@ def _block_count_and_items(slug):
                 ORDER BY timeline_date DESC, created_at DESC
                 LIMIT 200
             """)
+            timeline_rows = cu.fetchall()
+
+            # Milestone corrections use append-only overlays, like Chat Ledger
+            # revisions. The newest targeted correction replaces the displayed
+            # content of the original milestone without creating a second row.
+            cu.execute("""
+                SELECT id::text, content, tags, created_at
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND 'zawwar-milestone-revision' = ANY(tags)
+                ORDER BY created_at DESC
+            """)
+            milestone_revisions = {}
+            for rr in cu.fetchall():
+                target = ""
+                for tag in (rr["tags"] or []):
+                    if tag.startswith("zawwar-milestone-target:"):
+                        target = tag.split(":", 1)[1]
+                        break
+                if target and target not in milestone_revisions:
+                    milestone_revisions[target] = rr
+
             items = []
-            for r in cu.fetchall():
+            for r in timeline_rows:
                 content = r["content"] or ""
+                milestone_revision = (
+                    milestone_revisions.get(r["id"])
+                    if r["timeline_kind"] == "milestone"
+                    else None
+                )
+                if milestone_revision:
+                    content = milestone_revision["content"] or content
                 lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
                 if r["timeline_kind"] == "repo":
                     first = lines[0] if lines else "Repository"
@@ -1220,9 +1249,11 @@ def _block_count_and_items(slug):
                 else:
                     headline = (lines[0] if lines else "Milestone").strip("*").strip()
                     items.append({
-                        "id": r["id"], "title": headline[:180],
+                        "id": milestone_revision["id"] if milestone_revision else r["id"],
+                        "base_id": r["id"], "title": headline[:180],
                         "preview": content, "full": content, "written_by": r["written_by"],
                         "created_at": r["created_at"].isoformat(),
+                        "updated_at": milestone_revision["created_at"].isoformat() if milestone_revision else None,
                         "milestone_date": r["timeline_date"].isoformat(),
                         "tags": r["tags"] or [], "importance": r["importance"] or 3,
                         "kind": "milestone",

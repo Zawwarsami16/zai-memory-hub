@@ -631,10 +631,13 @@ async function openBlockRoom(slug){
     }
     if (it.kind === 'chat_entry'){
       const meta = [it.model, it.project, it.surface].filter(Boolean).join(' · ');
+      const updated = it.updated_at
+        ? ' · UPDATED ' + new Date(it.updated_at).toLocaleString('en-CA',{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
+        : '';
       return `<li class="rm-card chat-entry" data-mid="${esc(it.id)}">
         <div class="rm-i">→</div>
         <div class="rm-card-body">
-          <div class="rm-card-meta">${esc(new Date(it.created_at).toLocaleString('en-CA',{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}))}${meta ? ' · ' + esc(meta) : ''}</div>
+          <div class="rm-card-meta">${esc(new Date(it.created_at).toLocaleString('en-CA',{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}))}${meta ? ' · ' + esc(meta) : ''}${esc(updated)}</div>
           <div class="rm-card-title">${esc(it.title || 'Chat session')}</div>
           <div class="rm-card-text">${esc(trunc(it.preview || '', 520))}</div>
           ${it.locator ? `<div class="chat-ledger-locator">locator · ${esc(it.locator)}</div>` : ''}

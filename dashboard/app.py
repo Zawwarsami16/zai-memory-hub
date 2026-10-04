@@ -1206,7 +1206,6 @@ def _block_count_and_items(slug):
                 if milestone_revision:
                     content = milestone_revision["content"] or content
                 lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
-                lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
                 if r["timeline_kind"] == "repo":
                     first = lines[0] if lines else "Repository"
                     title = first.strip("*").strip()

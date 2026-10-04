@@ -114,13 +114,18 @@ def seed_admin() -> None:
 def main() -> None:
     apply_migrations()
     n = memory_count()
-    print(f"[bootstrap] database currently contains {n} memories; syncing recovery snapshot idempotently", flush=True)
-    p = fetch_recovery_snapshot()
-    try:
-        import_snapshot(p)
-    finally:
-        p.unlink(missing_ok=True)
+    print(f"[bootstrap] database currently contains {n} memories", flush=True)
+    if n == 0:
+        p = fetch_recovery_snapshot()
+        try:
+            import_snapshot(p)
+        finally:
+            p.unlink(missing_ok=True)
+    else:
+        print('[bootstrap] preserving live data; old snapshot import skipped', flush=True)
     seed_admin()
+    from scripts.restore_assets import restore_assets
+    restore_assets()
     print("[bootstrap] ready", flush=True)
 
 

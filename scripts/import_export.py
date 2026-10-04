@@ -14,15 +14,15 @@ What it does:
     6.  Skips rows whose id already exists (idempotent — safe to re-run).
 
 What it deliberately does NOT do:
-    -  Touch static/uploads/.  Tar that directory separately on export
-       and untar it on the new host.
+    -  Touch the static disk cache. Assets in current exports restore to
+       Postgres; older metadata-only exports need their separate archive.
     -  Re-create embeddings.  Those rebuild on first memory.recall once
        the new Hub has its Voyage key set.
 
 Run it against a *new* Hub.  Importing into a populated Hub is
 supported (UUID uniqueness handles it) but un-tested at scale.
 """
-import json, os, sys
+import json, os, sys, base64, hashlib
 from pathlib import Path
 
 import psycopg
@@ -61,9 +61,7 @@ def upsert_entities(cx, rows):
             cu.execute(
                 "INSERT INTO entities(id, slug, kind, display, metadata, created_at, updated_at) "
                 "VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s) "
-                "ON CONFLICT (slug) DO UPDATE SET "
-                "kind = EXCLUDED.kind, display = EXCLUDED.display, "
-                "metadata = EXCLUDED.metadata, updated_at = EXCLUDED.updated_at",
+                "ON CONFLICT (slug) DO NOTHING",
                 (r["id"], r["slug"], r["kind"], r["display"],
                  json.dumps(r.get("metadata") or {}),
                  r.get("created_at"), r.get("updated_at")))
@@ -166,7 +164,25 @@ def advance_sequences(cx):
             )
 
 
+def restore_export_assets(cx, blob):
+    # Allow direct invocation (`python scripts/import_export.py ...`).
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from server.assets import insert_asset
+    for item in blob.get('assets', []):
+        data = base64.b64decode(''.join(item['data_base64'].split()), validate=True)
+        if hashlib.sha256(data).hexdigest() != item['sha256']:
+            raise ValueError('export asset checksum mismatch')
+        insert_asset(cx, item['path'], data)
+    # Mark only a full asset export, never a metadata-only snapshot.
+    if blob.get('assets'):
+        for item in blob.get('asset_imports', []):
+            cx.execute('INSERT INTO hub_asset_imports(source,asset_count,completed_at) '
+                       'VALUES (%s,%s,%s) ON CONFLICT (source) DO NOTHING',
+                       (item['source'], item['asset_count'], item['completed_at']))
+
+
 with psycopg.connect(DSN, row_factory=dict_row, autocommit=False) as cx:
+    restore_export_assets(cx, blob)
     e = upsert_entities(cx, blob.get("entities", []))
     print(f"[import] entities   +{e}")
     m = upsert_memories(cx, blob.get("memories", []))

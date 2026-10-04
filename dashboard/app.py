@@ -42,7 +42,7 @@ DB_DSN = os.environ.get(
 DASHBOARD_KEY = os.environ.get("ZAI_HUB_DASHBOARD_KEY")
 if not DASHBOARD_KEY:
     DASHBOARD_KEY = secrets.token_urlsafe(24)
-    print(f"[dashboard] WARN: ZAI_HUB_DASHBOARD_KEY not set — generated ephemeral key: {DASHBOARD_KEY}",
+    print("[dashboard] WARN: ZAI_HUB_DASHBOARD_KEY not set — generated an ephemeral key",
           file=sys.stderr, flush=True)
 COOKIE_NAME = "zai_hub_session"
 
@@ -57,7 +57,9 @@ app = FastAPI(title="ZAI Memory Hub")
 
 STATIC_DIR = Path(__file__).parent / "static"
 if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    from server.assets import DurableStaticFiles
+    app.mount("/static", DurableStaticFiles(directory=str(STATIC_DIR),
+              dashboard_key=DASHBOARD_KEY, cookie_name=COOKIE_NAME), name="static")
 
 
 def require_auth(req: Request):
@@ -67,12 +69,27 @@ def require_auth(req: Request):
 
 @app.get("/login")
 def login(key: str = "", resp: Response = None):
+    if not key:
+        return HTMLResponse("""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>Sign in · ZAI Memory Hub</title></head>
+        <body style="margin:0;background:#100c10;color:#f5ecdb;font-family:system-ui;display:grid;place-items:center;min-height:100vh">
+        <main style="width:min(360px,85vw)"><h1>ZAI Memory Hub</h1><p>Sign in to your private memory space.</p>
+        <form method="post" action="/login"><label for="key">Dashboard key</label>
+        <input id="key" name="key" type="password" autocomplete="current-password" required
+          style="box-sizing:border-box;width:100%;padding:12px;margin:12px 0;background:#201921;color:#fff;border:1px solid #766878;border-radius:6px">
+        <button type="submit" style="width:100%;padding:12px;background:#dfbd90;border:0;border-radius:6px">Sign in</button>
+        </form></main></body></html>""", headers={"Cache-Control": "no-store"})
     if key != DASHBOARD_KEY:
         return JSONResponse({"error": "bad key"}, status_code=401)
     r = RedirectResponse(url="/", status_code=302)
     r.set_cookie(COOKIE_NAME, DASHBOARD_KEY, max_age=60*60*24*30,
                  httponly=True, samesite="lax", secure=True, path="/")
     return r
+
+
+@app.post("/login")
+def login_post(key: str = Form(...)):
+    return login(key=key)
 
 
 # ---- API ---------------------------------------------------------
@@ -380,12 +397,13 @@ def _row_dumps(r: dict) -> str:
 def api_export(_: None = Depends(require_auth),
                include_deleted: bool = True,
                include_audit: bool = True,
-               include_tool_calls: bool = False):
+               include_tool_calls: bool = False,
+               include_assets: bool = True):
     """Full memory hub dump as one streamed JSON file.
 
     Carry the resulting file to any new Hub install and re-import with
-    `scripts/import_export.py`.  No binary blobs (uploaded PDFs sit under
-    static/uploads/ — tar that separately).
+    `scripts/import_export.py`. Assets are included as base64 by default;
+    use include_assets=false only for a deliberately metadata-only export.
     """
     tables = [
         ("entities",
@@ -416,6 +434,13 @@ def api_export(_: None = Depends(require_auth),
                        "SELECT id, tool_name, args, result_brief, called_by, session_id, "
                        "duration_ms, status, error, created_at "
                        "FROM tool_calls ORDER BY created_at"))
+    if include_assets:
+        tables.extend([
+            ("assets", "SELECT path, encode(data, 'base64') AS data_base64, sha256, "
+             "media_type, created_at FROM hub_assets ORDER BY path"),
+            ("asset_imports", "SELECT source, asset_count, completed_at "
+             "FROM hub_asset_imports ORDER BY source"),
+        ])
 
     def gen():
         yield (
@@ -1242,6 +1267,8 @@ def _generate_cover(short_sha: str, title: str, tags: list, body_excerpt: str) -
         dest = COVERS_DIR / f"{short_sha}.jpg"
         with urllib.request.urlopen(out, timeout=60) as r, open(dest, "wb") as f:
             f.write(r.read())
+        from server.assets import save_asset
+        save_asset(f"uploads/covers/{short_sha}.jpg", dest.read_bytes())
         # Spend log (matches scripts/gen.py format)
         try:
             spend_log = Path(__file__).resolve().parent.parent / "scripts" / "replicate-spend.log"
@@ -1283,6 +1310,8 @@ async def api_upload(
     short_sha = sha[:16]
     saved_name = f"{short_sha}.pdf"
     saved_path = UPLOADS_DIR / saved_name
+    from server.assets import save_asset
+    save_asset(f"uploads/{saved_name}", data)
     if not saved_path.exists():
         saved_path.write_bytes(data)
     # Extract for fallback + body excerpt
@@ -1537,7 +1566,7 @@ def timeline_route(request: Request):
     if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
         return HTMLResponse(
             "<html><body style='font-family:monospace;padding:40px;background:#0a0508;color:#f5ecdb'>"
-            "ZAI Memory Hub — auth required. Visit <code>/login?key=YOUR_KEY</code>.</body></html>",
+            "ZAI Memory Hub — auth required. Please <a href='/login'>sign in</a>.</body></html>",
             status_code=401)
     return HTMLResponse(TIMELINE_HTML)
 
@@ -6069,7 +6098,7 @@ def agent_token_page(request: Request):
     if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
         return HTMLResponse(
             "<html><body style='font-family:monospace;padding:40px;background:#0a0508;color:#f5ecdb'>"
-            "ZAI Memory Hub — auth required. Visit <code>/login?key=YOUR_KEY</code>.</body></html>",
+            "ZAI Memory Hub — auth required. Please <a href='/login'>sign in</a>.</body></html>",
             status_code=401)
     token = _load_agent_token() or "(token file missing — run: python -c \"import secrets; print('zai_'+secrets.token_urlsafe(32))\" > $ZAI_HUB_AGENT_TOKEN_PATH)"
     login_url = f"{PUBLIC_URL}/login?key={DASHBOARD_KEY}"
@@ -6384,7 +6413,7 @@ def graph_page(request: Request, slug: str = ""):
     if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
         return HTMLResponse(
             "<html><body style='font-family:monospace;padding:40px;background:#0a0508;color:#f5ecdb'>"
-            "ZAI Memory Hub — auth required. Visit <code>/login?key=YOUR_KEY</code>.</body></html>",
+            "ZAI Memory Hub — auth required. Please <a href='/login'>sign in</a>.</body></html>",
             status_code=401)
     return HTMLResponse(GRAPH_HTML, headers={"Cache-Control": "no-store"})
 
@@ -6653,7 +6682,7 @@ def agents_page(request: Request):
     if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
         return HTMLResponse(
             "<html><body style='font-family:monospace;padding:40px;background:#0a0508;color:#f5ecdb'>"
-            "ZAI Memory Hub — auth required. Visit <code>/login?key=YOUR_KEY</code>.</body></html>",
+            "ZAI Memory Hub — auth required. Please <a href='/login'>sign in</a>.</body></html>",
             status_code=401)
     return HTMLResponse(AGENTS_HTML, headers={"Cache-Control": "no-store"})
 
@@ -6663,7 +6692,7 @@ def connect(request: Request):
     if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
         return HTMLResponse(
             "<html><body style='font-family:monospace;padding:40px;background:#0a0508;color:#f5ecdb'>"
-            "ZAI Memory Hub — auth required. Visit <code>/login?key=YOUR_KEY</code>.</body></html>",
+            "ZAI Memory Hub — auth required. Please <a href='/login'>sign in</a>.</body></html>",
             status_code=401)
     return HTMLResponse(CONNECT_HTML)
 
@@ -6673,7 +6702,7 @@ def universe(request: Request):
     if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
         return HTMLResponse(
             "<html><body style='font-family:monospace;padding:40px;background:#08030a;color:#f5ecdb'>"
-            "ZAI Memory Hub — auth required. Visit <code>/login?key=YOUR_KEY</code>.</body></html>",
+            "ZAI Memory Hub — auth required. Please <a href='/login'>sign in</a>.</body></html>",
             status_code=401)
     return HTMLResponse(UNIVERSE_HTML)
 
@@ -6685,7 +6714,7 @@ def index(request: Request):
     if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
         return HTMLResponse(
             "<html><body style='font-family:monospace;padding:40px;background:#0a0508;color:#f5ecdb'>"
-            "ZAI Memory Hub — auth required. Visit <code>/login?key=YOUR_KEY</code>.</body></html>",
+            "ZAI Memory Hub — auth required. Please <a href='/login'>sign in</a>.</body></html>",
             status_code=401)
     # Always-fresh HTML — single-user dashboard, no upstream cache,
     # but browsers were holding the old version.  Pin to no-store.
@@ -6702,7 +6731,7 @@ def library_route(request: Request):
     if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
         return HTMLResponse(
             "<html><body style='font-family:monospace;padding:40px;background:#0a0508;color:#f5ecdb'>"
-            "ZAI Memory Hub — auth required. Visit <code>/login?key=YOUR_KEY</code>.</body></html>",
+            "ZAI Memory Hub — auth required. Please <a href='/login'>sign in</a>.</body></html>",
             status_code=401)
     return HTMLResponse(LIBRARY_HTML)
 
@@ -6713,7 +6742,7 @@ def dashboard(request: Request):
     if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
         return HTMLResponse(
             "<html><body style='font-family:monospace;padding:40px;background:#08030a;color:#f5ecdb'>"
-            "ZAI Memory Hub — auth required. Visit <code>/login?key=YOUR_KEY</code>.</body></html>",
+            "ZAI Memory Hub — auth required. Please <a href='/login'>sign in</a>.</body></html>",
             status_code=401)
     return HTMLResponse(INDEX_HTML)
 

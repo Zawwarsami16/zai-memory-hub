@@ -109,16 +109,16 @@ The dashboard's knowledge blocks each filter on a tag set. If you want your memo
 | Crypto & Markets | crypto, market, trade, liquidity, regime, macro, btc, eth, framework                                                          |
 | Infrastructure   | infra, vps, mcp, systemd, pipeline, deploy, config, tech-debt, state                                                          |
 | Now Building     | milestone, ship, in-flight, ui, feature, build                                                                                |
-| Zawwar Milestones| `zawwar-milestone-canonical` + `milestone-date-YYYY-MM-DD`                                                                |
+| Zawwar Timeline | `github-project` + `zawwar-milestone-canonical`                                                                |
 | GitHub Projects  | `github-project` (use `scripts/build_github_projects_block.py` to populate)                                                   |
 | Documents        | `document` (auto-added by `memory.add_full` / PDF upload; don't set manually)                                                 |
 | Chats            | _(kind: chats, not tag — written by `chat_window.create`)_                                                                    |
 
 If your memory genuinely fits none of those, write it anyway with no tags. It still shows in the Timeline and recent feeds. Tags are for discoverability, not gatekeeping.
 
-### Zawwar Milestones convention
+### Zawwar Timeline convention
 
-Use the **Zawwar Milestones** block only for durable, verified events that help a future agent reconstruct Zawwar's work without re-researching it: a real ship, publication, public release, important research/document completion, major system transition, or similarly consequential milestone.
+Use the **Zawwar Timeline** as the compact cross-chat map of Zawwar's work. Every `github-project` memory appears automatically as a repository row (public/private, context, GitHub link, indexed Last push date). Non-repository events such as papers and public product ships use `zawwar-milestone-canonical` with an explicit event date.
 
 Write **one event per memory** with:
 - required tag `zawwar-milestone-canonical` (you may also include `zawwar-milestone` for broad recall)

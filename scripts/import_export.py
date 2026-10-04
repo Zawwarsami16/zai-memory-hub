@@ -54,14 +54,23 @@ if blob.get("schema_version") != "1":
 print(f"[import] exported_at={blob.get('exported_at')} source={blob.get('source')}")
 
 
-def upsert_entities(cx, rows):
+def upsert_entities(cx, rows, restore_seeded=False):
     n = 0
+    # An empty database may contain default entities from migration 001.
+    # Restore their metadata while keeping the seeded UUIDs. On a populated
+    # Hub, preserve the live metadata instead of replaying an old snapshot.
+    conflict = (
+        "ON CONFLICT (slug) DO UPDATE SET kind=EXCLUDED.kind, "
+        "display=EXCLUDED.display, metadata=EXCLUDED.metadata, "
+        "updated_at=EXCLUDED.updated_at"
+        if restore_seeded else "ON CONFLICT (slug) DO NOTHING"
+    )
     with cx.cursor() as cu:
         for r in rows:
             cu.execute(
                 "INSERT INTO entities(id, slug, kind, display, metadata, created_at, updated_at) "
                 "VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s) "
-                "ON CONFLICT (slug) DO NOTHING",
+                + conflict,
                 (r["id"], r["slug"], r["kind"], r["display"],
                  json.dumps(r.get("metadata") or {}),
                  r.get("created_at"), r.get("updated_at")))
@@ -183,7 +192,8 @@ def restore_export_assets(cx, blob):
 
 with psycopg.connect(DSN, row_factory=dict_row, autocommit=False) as cx:
     restore_export_assets(cx, blob)
-    e = upsert_entities(cx, blob.get("entities", []))
+    fresh = cx.execute('SELECT NOT EXISTS (SELECT 1 FROM memories) AS empty').fetchone()['empty']
+    e = upsert_entities(cx, blob.get("entities", []), restore_seeded=fresh)
     print(f"[import] entities   +{e}")
     m = upsert_memories(cx, blob.get("memories", []))
     print(f"[import] memories   +{m}")

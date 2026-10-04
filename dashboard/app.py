@@ -1061,8 +1061,30 @@ def _block_count_and_items(slug):
                   created_at DESC
                 LIMIT 120
             """)
+            base_rows = cu.fetchall()
+
+            # Ledger revisions are append-only overlays. They never create a second
+            # visible chat row: the newest revision targeted at a base chat memory
+            # replaces that row's displayed/read content while preserving history.
+            cu.execute("""
+                SELECT id::text, content, tags, created_at
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND 'chat-ledger-revision' = ANY(tags)
+                ORDER BY created_at DESC
+            """)
+            revisions = {}
+            for rr in cu.fetchall():
+                target = ""
+                for tag in (rr["tags"] or []):
+                    if tag.startswith("chat-ledger-target:"):
+                        target = tag.split(":", 1)[1]
+                        break
+                if target and target not in revisions:
+                    revisions[target] = rr
+
             items = []
-            for r in cu.fetchall():
+            for r in base_rows:
                 content = r["content"] or ""
                 lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
                 tags = r["tags"] or []
@@ -1073,6 +1095,11 @@ def _block_count_and_items(slug):
                             return ln.split(":", 1)[1].strip()
                     return ""
                 if r["ledger_kind"] == "chat_entry":
+                    revision = revisions.get(r["id"])
+                    if revision:
+                        content = revision["content"] or content
+                        lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+                        tags = r["tags"] or []
                     title = _field("Chat title") or (lines[0] if lines else "Chat session")
                     summary = _field("Summary") or _field("Major context")
                     if not summary:
@@ -1081,9 +1108,13 @@ def _block_count_and_items(slug):
                     if chat_url.lower() in ("unavailable", "unknown", "none", "n/a"):
                         chat_url = ""
                     items.append({
-                        "id": r["id"], "title": title[:180], "preview": summary[:900],
+                        "id": revision["id"] if revision else r["id"],
+                        "base_id": r["id"],
+                        "title": title[:180], "preview": summary[:900],
                         "full": content, "written_by": r["written_by"],
-                        "created_at": r["created_at"].isoformat(), "tags": tags,
+                        "created_at": r["created_at"].isoformat(),
+                        "updated_at": revision["created_at"].isoformat() if revision else None,
+                        "tags": tags,
                         "importance": r["importance"] or 3, "kind": "chat_entry",
                         "model": _field("Model"), "surface": _field("Surface"),
                         "project": _field("Project"), "locator": _field("Locator"),

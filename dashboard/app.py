@@ -966,6 +966,13 @@ BLOCKS = {
         "tags": ["github-project", "zawwar-milestone-canonical"],
         "accent": "#f5dca3",
     },
+    "chat-ledger": {
+        "label": "Chat Ledger",
+        "sub": "Conversation summaries · standing context",
+        "kind": "chat-ledger",
+        "tags": ["chat-ledger", "chat-standing-rule"],
+        "accent": "#d7b4ff",
+    },
     "philosophy": {
         "label": "Philosophy & Drafts",
         "sub": "Longer thinking, ideas, drafts",
@@ -1027,7 +1034,71 @@ def _block_count_and_items(slug):
         return None
     with db() as cx, cx.cursor() as cu:
         kind = block.get("kind")
-        if kind == "zawwar-timeline":
+        if kind == "chat-ledger":
+            cu.execute("""
+                SELECT count(*)::int AS n FROM memories
+                WHERE deleted_at IS NULL
+                  AND (
+                    'chat-ledger' = ANY(tags)
+                    OR 'chat-standing-rule' = ANY(tags)
+                  )
+            """)
+            n = cu.fetchone()["n"]
+            cu.execute("""
+                SELECT id::text, content, tags, written_by, importance, created_at,
+                       CASE
+                           WHEN 'chat-ledger' = ANY(tags) THEN 'chat_entry'
+                           ELSE 'chat_rule'
+                       END AS ledger_kind
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND (
+                    'chat-ledger' = ANY(tags)
+                    OR 'chat-standing-rule' = ANY(tags)
+                  )
+                ORDER BY
+                  CASE WHEN 'chat-ledger' = ANY(tags) THEN 0 ELSE 1 END,
+                  created_at DESC
+                LIMIT 120
+            """)
+            items = []
+            for r in cu.fetchall():
+                content = r["content"] or ""
+                lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+                tags = r["tags"] or []
+                def _field(name):
+                    prefix = name.lower() + ":"
+                    for ln in lines:
+                        if ln.lower().startswith(prefix):
+                            return ln.split(":", 1)[1].strip()
+                    return ""
+                if r["ledger_kind"] == "chat_entry":
+                    title = _field("Chat title") or (lines[0] if lines else "Chat session")
+                    summary = _field("Summary") or _field("Major context")
+                    if not summary:
+                        summary = "Structured conversation context saved for cross-chat continuity."
+                    chat_url = _field("Chat URL")
+                    if chat_url.lower() in ("unavailable", "unknown", "none", "n/a"):
+                        chat_url = ""
+                    items.append({
+                        "id": r["id"], "title": title[:180], "preview": summary[:900],
+                        "full": content, "written_by": r["written_by"],
+                        "created_at": r["created_at"].isoformat(), "tags": tags,
+                        "importance": r["importance"] or 3, "kind": "chat_entry",
+                        "model": _field("Model"), "surface": _field("Surface"),
+                        "project": _field("Project"), "locator": _field("Locator"),
+                        "chat_url": chat_url,
+                    })
+                else:
+                    title = lines[0] if lines else "Standing context"
+                    meaning = _field("Meaning") or content
+                    items.append({
+                        "id": r["id"], "title": title[:180], "preview": meaning[:900],
+                        "full": content, "written_by": r["written_by"],
+                        "created_at": r["created_at"].isoformat(), "tags": tags,
+                        "importance": r["importance"] or 3, "kind": "chat_rule",
+                    })
+        elif kind == "zawwar-timeline":
             # Canonical milestones + GitHub Projects inventory in one timeline.
             cu.execute("""
                 SELECT count(*)::int AS n FROM memories
@@ -5325,6 +5396,21 @@ code{font-family:var(--mono);font-size:.85em;background:rgba(220,38,38,0.08);pad
 .rm-empty-tags{display:flex;flex-wrap:wrap;justify-content:center;gap:6px}
 .rm-empty-tags .tag{font-family:var(--mono);font-size:10px;padding:3px 9px;background:rgba(220,38,38,0.06);border:1px solid var(--line-bright);color:var(--fg-dim);border-radius:99px}
 
+/* ===== CHAT LEDGER ===== */
+.chat-ledger-grid{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(300px,.85fr);gap:36px;max-width:1180px;margin:0 auto;padding:0 60px 80px;width:100%}
+.chat-ledger-col{min-width:0}
+.chat-ledger-col-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:18px 0 10px;border-bottom:1px solid var(--line-bright)}
+.chat-ledger-col-title{font-family:var(--serif-soft);font-style:italic;font-size:22px;color:var(--gold)}
+.chat-ledger-col-sub{font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--gold-deep)}
+.chat-ledger-list{list-style:none;padding:0;margin:0}
+.chat-ledger-list .rm-card{grid-template-columns:44px 1fr}
+.chat-rule-list .rm-card{grid-template-columns:34px 1fr}
+.chat-rule-list .rm-card-title{font-size:16px}
+.chat-rule-list .rm-card-text{font-size:13px}
+.chat-ledger-locator{margin-top:8px;font-family:var(--mono);font-size:9px;line-height:1.5;color:var(--fg-dim);word-break:break-word}
+@media (max-width:900px){
+  .chat-ledger-grid{grid-template-columns:1fr;gap:18px;padding:0 24px 60px}
+}
 /* ===== MEMORY READER (nested inside room or standalone) ===== */
 .reader{position:fixed;top:0;right:0;bottom:0;width:540px;max-width:96vw;z-index:90;background:linear-gradient(180deg,var(--surface) 0%,var(--bg) 100%);border-left:1px solid var(--gold-deep);box-shadow:-30px 0 80px -20px rgba(220,38,38,0.45);transform:translateX(100%);transition:transform .4s cubic-bezier(.22,.61,.36,1);overflow-y:auto;padding:40px 30px 50px}
 .reader.open{transform:translateX(0)}
@@ -5524,7 +5610,7 @@ code{font-family:var(--mono);font-size:.85em;background:rgba(220,38,38,0.08);pad
 </aside>
 <div id="uploadToast"></div>
 
-<script src="/static/blocks.js?v=2026-10-04-zawwar-timeline-all-repos"></script>
+<script src="/static/blocks.js?v=2026-10-04-chat-ledger"></script>
 </body></html>
 """
 

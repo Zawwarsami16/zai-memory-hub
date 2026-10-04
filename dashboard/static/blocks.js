@@ -23,6 +23,7 @@ const BLOCK_HERO = {
   'references':   '/static/gen/lib_hero_archive.jpg',
   'now-building': '/static/gen/cat_coding.jpg',
   'zawwar-milestones': '/static/gen/lib_hero_archive.jpg',
+  'chat-ledger': '/static/gen/cat_planning.jpg',
   'tools':        '/static/gen/cat_web.jpg',
 };
 // Hover micro-loops — only some blocks have a generated video; others
@@ -628,6 +629,29 @@ async function openBlockRoom(slug){
         </div>
       </li>`;
     }
+    if (it.kind === 'chat_entry'){
+      const meta = [it.model, it.project, it.surface].filter(Boolean).join(' · ');
+      return `<li class="rm-card chat-entry" data-mid="${esc(it.id)}">
+        <div class="rm-i">→</div>
+        <div class="rm-card-body">
+          <div class="rm-card-meta">${esc(new Date(it.created_at).toLocaleString('en-CA',{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}))}${meta ? ' · ' + esc(meta) : ''}</div>
+          <div class="rm-card-title">${esc(it.title || 'Chat session')}</div>
+          <div class="rm-card-text">${esc(trunc(it.preview || '', 520))}</div>
+          ${it.locator ? `<div class="chat-ledger-locator">locator · ${esc(it.locator)}</div>` : ''}
+          ${it.chat_url ? `<div class="rm-alts"><a class="tag rm-link" href="${esc(it.chat_url)}" target="_blank" rel="noopener">open original chat ↗</a></div>` : ''}
+        </div>
+      </li>`;
+    }
+    if (it.kind === 'chat_rule'){
+      return `<li class="rm-card chat-rule" data-mid="${esc(it.id)}">
+        <div class="rm-i">◆</div>
+        <div class="rm-card-body">
+          <div class="rm-card-meta">STANDING CONTEXT · ${esc(new Date(it.created_at).toLocaleDateString('en-CA',{year:'numeric',month:'short',day:'numeric'}))}</div>
+          <div class="rm-card-title">${esc(it.title || 'Standing context')}</div>
+          <div class="rm-card-text">${esc(trunc(it.preview || '', 420))}</div>
+        </div>
+      </li>`;
+    }
     if (it.kind === 'memory'){
       return `<li class="rm-card" data-mid="${esc(it.id)}">
         <div class="rm-i">→</div>
@@ -670,6 +694,30 @@ async function openBlockRoom(slug){
     }
     return '';
   };
+  const genericRoomContent = data.items.length ? `<ol class="rm-list">${data.items.map(renderItem).join('')}</ol>` : `
+    <div class="rm-empty">
+      <div class="rm-empty-title">Nothing tagged here yet.</div>
+      <div class="rm-empty-sub">When agents write memories with these tags, they'll appear here:</div>
+      <div class="rm-empty-tags">${(b.tags||[]).map(t => `<span class="tag">#${esc(t)}</span>`).join('')}</div>
+    </div>
+  `;
+  let roomContent = genericRoomContent;
+  if (slug === 'chat-ledger'){
+    const chats = data.items.filter(it => it.kind === 'chat_entry');
+    const rules = data.items.filter(it => it.kind === 'chat_rule');
+    const chatHtml = chats.length ? chats.map(renderItem).join('') : '<li class="rm-card"><div class="rm-card-body"><div class="rm-card-text">No chat summaries yet.</div></div></li>';
+    const ruleHtml = rules.length ? rules.map(renderItem).join('') : '<li class="rm-card"><div class="rm-card-body"><div class="rm-card-text">No standing context yet.</div></div></li>';
+    roomContent = `<div class="chat-ledger-grid">
+      <section class="chat-ledger-col">
+        <div class="chat-ledger-col-head"><div class="chat-ledger-col-title">Recent Chats</div><div class="chat-ledger-col-sub">${chats.length} saved</div></div>
+        <ol class="chat-ledger-list">${chatHtml}</ol>
+      </section>
+      <aside class="chat-ledger-col">
+        <div class="chat-ledger-col-head"><div class="chat-ledger-col-title">Standing Context</div><div class="chat-ledger-col-sub">${rules.length} rules</div></div>
+        <ol class="chat-ledger-list chat-rule-list">${ruleHtml}</ol>
+      </aside>
+    </div>`;
+  }
   body.innerHTML = `
     <header class="rm-header" style="--accent:${b.accent || '#dc2626'}">
       ${heroUrl ? `<div class="rm-hero" style="background-image:url(${heroUrl})"><div class="rm-hero-tint"></div></div>` : ''}
@@ -677,13 +725,7 @@ async function openBlockRoom(slug){
       <h2 class="rm-title">${esc(b.label)}</h2>
       <div class="rm-sub">${esc(b.sub)} · ${data.count} items</div>
     </header>
-    ${data.items.length ? `<ol class="rm-list">${data.items.map(renderItem).join('')}</ol>` : `
-      <div class="rm-empty">
-        <div class="rm-empty-title">Nothing tagged here yet.</div>
-        <div class="rm-empty-sub">When agents write memories with these tags, they'll appear here:</div>
-        <div class="rm-empty-tags">${(b.tags||[]).map(t => `<span class="tag">#${esc(t)}</span>`).join('')}</div>
-      </div>
-    `}
+    ${roomContent}
   `;
   body.querySelectorAll('.rm-link').forEach(el => el.addEventListener('click', (e) => e.stopPropagation()));
   body.querySelectorAll('.rm-card[data-mid]').forEach(el => el.addEventListener('click', () => openMemory(el.dataset.mid)));

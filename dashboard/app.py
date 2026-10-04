@@ -961,9 +961,9 @@ def api_agents(_: None = Depends(require_auth)):
 BLOCKS = {
     "zawwar-milestones": {
         "label": "Zawwar Milestones",
-        "sub": "Shipped · published · research · public record",
+        "sub": "Public ships · papers · selected projects",
         "kind": "milestones",
-        "tags": ["zawwar-milestone"],
+        "tags": ["zawwar-milestone-canonical"],
         "accent": "#f5dca3",
     },
     "philosophy": {
@@ -1034,7 +1034,7 @@ def _block_count_and_items(slug):
             # when an agent happened to add them to the Hub.
             cu.execute(
                 "SELECT count(*)::int AS n FROM memories "
-                "WHERE deleted_at IS NULL AND 'zawwar-milestone' = ANY(tags)")
+                "WHERE deleted_at IS NULL AND 'zawwar-milestone-canonical' = ANY(tags)")
             n = cu.fetchone()["n"]
             cu.execute("""
                 WITH milestone_rows AS (
@@ -1050,7 +1050,7 @@ def _block_count_and_items(slug):
                            ) AS milestone_date
                     FROM memories
                     WHERE deleted_at IS NULL
-                      AND 'zawwar-milestone' = ANY(tags)
+                      AND 'zawwar-milestone-canonical' = ANY(tags)
                 )
                 SELECT * FROM milestone_rows
                 ORDER BY milestone_date DESC, created_at DESC

@@ -69,7 +69,7 @@ The server stamps every write's `written_by` from the token row. **Clients canno
 | Crypto & Markets | `crypto`, `market`, `regime`, `liquidity` | Trading thinking |
 | Infrastructure | `infra`, `vps`, `mcp`, `systemd`, `pipeline` | System / deployment notes |
 | Now Building | `milestone`, `ship`, `in-flight`, `feature` | Current shipping work |
-| Zawwar Milestones | `zawwar-milestone` + `milestone-date-YYYY-MM-DD` | Verified ships, publications, research and major transitions, sorted by actual event date |
+| Zawwar Milestones | `zawwar-milestone-canonical` + `milestone-date-YYYY-MM-DD` | Curated public ships, papers and selected projects, sorted by actual event date |
 | Decisions | _(kind: decisions)_ | `decision_log` entries |
 | References | _(kind: entities)_ | Entity-card view |
 | Chats | _(kind: chats)_ | Ephemeral chat windows (10-day TTL) |

@@ -110,6 +110,7 @@ The dashboard's knowledge blocks each filter on a tag set. If you want your memo
 | Infrastructure   | infra, vps, mcp, systemd, pipeline, deploy, config, tech-debt, state                                                          |
 | Now Building     | milestone, ship, in-flight, ui, feature, build                                                                                |
 | Zawwar Timeline | `github-project` + `zawwar-milestone-canonical`                                                                |
+| Chat Ledger      | `chat-ledger` for session summaries · `chat-standing-rule` for reusable working context                                      |
 | GitHub Projects  | `github-project` (use `scripts/build_github_projects_block.py` to populate)                                                   |
 | Documents        | `document` (auto-added by `memory.add_full` / PDF upload; don't set manually)                                                 |
 | Chats            | _(kind: chats, not tag — written by `chat_window.create`)_                                                                    |
@@ -142,6 +143,50 @@ Evidence/status: <verified current / historical verified / user-reported>
 ```
 
 Do not add plans, aspirations, routine commits, vanity metrics, recovery/migration work, maintenance, UI tweaks, internal version bumps, or unverified claims. If the date is only known to month precision, use the best verified day only when evidence supports it; otherwise do not invent a date. Corrections are append-only: write a new milestone memory naming the prior UUID and explaining the correction.
+
+### Chat Ledger convention
+
+When Zawwar says **"add this chat to the Memory Hub Chat Ledger cleanly"** (or equivalent), do not dump the transcript. Write one structured `chat-ledger` memory that preserves enough context for another agent to continue intelligently.
+
+Use this format:
+
+```
+Chat title: <exact ChatGPT/UI title if actually available; otherwise a concise generated headline>
+Title source: exact-ui | user-provided | generated
+Surface: <ChatGPT Android/Web/Desktop, Claude, etc.>
+Model: <model name if known>
+Project: <project/workspace name if known>
+Chat date: YYYY-MM-DD
+Chat URL: <exact/share URL if available; otherwise unavailable>
+Locator: <surface | project | date | title>
+
+Summary: <1-3 sentence orientation>
+Major context:
+- <important facts / work completed / reasoning state>
+Minor useful details:
+- <details that may matter later but do not deserve separate memories>
+Decisions / changes:
+- <what was chosen, corrected, rejected, or superseded>
+Current state:
+- <where the work stands now>
+Next step:
+- <what the next chat should do>
+User expectations:
+- <interaction or implementation expectations specific to this thread>
+Links / artifacts:
+- <canonical URLs, repo links, papers, files>
+```
+
+If the exact ChatGPT app title or URL is not exposed to the agent, **do not invent it**. Generate a stable headline and save a Locator. A future ChatGPT can use the locator/title/date to search personal conversation context.
+
+Reusable interpretation rules discovered inside a conversation belong in a **separate** `chat-standing-rule` memory, not buried inside the session summary. Search before adding a standing rule so you do not create noisy duplicates; if a rule changes, append a revised rule that clearly supersedes the older interpretation.
+
+Examples of standing context include:
+- "don't break theme" = inspect and reuse the existing native component/layout first; make the smallest compatible change
+- what a recurring shorthand means
+- a durable workflow preference that a new chat would otherwise need explained again
+
+Never place passwords, API keys, private tokens, or other credentials in Chat Ledger.
 
 ## Quality bar
 

@@ -59,6 +59,25 @@ function milestoneUrls(text){
   return [...new Set(clean)].slice(0, 4);
 }
 
+
+function milestoneDateParts(iso){
+  const d = new Date(String(iso || '') + 'T00:00:00');
+  if (Number.isNaN(d.getTime())) return {year:'Unknown', month:'Unknown', day:'--', short:'--'};
+  return {
+    year: String(d.getFullYear()),
+    month: d.toLocaleDateString('en-CA',{month:'long'}),
+    day: d.toLocaleDateString('en-CA',{day:'2-digit'}),
+    short: d.toLocaleDateString('en-CA',{month:'short',day:'numeric'})
+  };
+}
+function milestoneBodySummary(text){
+  const lines = String(text || '').split('\n').map(x=>x.trim()).filter(Boolean);
+  const changed = lines.find(x => /^What changed:/i.test(x));
+  if (changed) return changed.replace(/^What changed:\s*/i,'');
+  const ignore = /^(Date:|Type:|Why it matters:|Links:|Evidence\/status:|https?:\/\/)/i;
+  return lines.filter(x => !ignore.test(x)).slice(1).join(' ');
+}
+
 function avatarFor(slug){
   if (ACTOR_IMG[slug]) return ACTOR_IMG[slug];
   // Procedural avatar — coloured gradient with first letter
@@ -281,6 +300,28 @@ function renderBlocks(){
       </article>
     `;
   }).join('');
+
+  const milestoneBlock = State.blocks.find(b => b.slug === 'zawwar-milestones');
+  const milestoneEl = document.querySelector('.block[data-slug="zawwar-milestones"]');
+  if (milestoneBlock && milestoneEl){
+    const oldPreview = milestoneEl.querySelector('.block-previews');
+    if (oldPreview){
+      const previews = (milestoneBlock.preview_items || []).slice(0,3);
+      let html = '<ul class="ms-card-preview">';
+      if (previews.length){
+        previews.forEach(p => {
+          const dp = milestoneDateParts(p.milestone_date);
+          html += '<li><span class="ms-card-date">' + esc(dp.short) + '</span><span class="ms-card-title">' +
+            esc(trunc(p.title || p.preview || '',64)) + '</span></li>';
+        });
+      } else {
+        html += '<li class="empty">nothing here yet</li>';
+      }
+      html += '</ul>';
+      oldPreview.outerHTML = html;
+    }
+  }
+
   document.querySelectorAll('.block').forEach(el => el.addEventListener('click', () => openBlockRoom(el.dataset.slug)));
   // Hover → load + play the loop video on demand
   document.querySelectorAll('.block').forEach(el => {
@@ -591,6 +632,48 @@ async function openAgentRoom(slug){
 }
 
 // ----- Room: topical block view ---------------------------------
+
+function renderMilestoneTimeline(items){
+  if (!items.length) return '<div class="ms-empty">No verified milestones yet.</div>';
+  const grouped = new Map();
+  for (const it of items){
+    const dp = milestoneDateParts(it.milestone_date);
+    if (!grouped.has(dp.year)) grouped.set(dp.year, new Map());
+    const months = grouped.get(dp.year);
+    if (!months.has(dp.month)) months.set(dp.month, []);
+    months.get(dp.month).push(it);
+  }
+  let html = '<div class="ms-timeline">';
+  for (const [year, months] of grouped.entries()){
+    html += '<section class="ms-year"><div class="ms-year-head"><div class="ms-year-label">' +
+      esc(year) + '</div><div class="ms-year-line"></div></div>';
+    for (const [month, entries] of months.entries()){
+      html += '<div class="ms-month"><div class="ms-month-label">' + esc(month) +
+        '</div><div class="ms-month-items">';
+      for (const it of entries){
+        const dp = milestoneDateParts(it.milestone_date);
+        const links = milestoneUrls(it.full || it.preview || '');
+        const summary = milestoneBodySummary(it.full || it.preview || '');
+        html += '<article class="ms-item" data-mid="' + esc(it.id) + '">' +
+          '<div class="ms-item-date">' + esc(dp.day) + ' &middot; ' + esc(formatMilestoneDate(it.milestone_date)) + '</div>' +
+          '<div class="ms-item-title">' + esc(it.title || 'Milestone') + '</div>' +
+          '<div class="ms-item-text">' + esc(trunc(summary, 520)) + '</div>';
+        if (links.length){
+          html += '<div class="ms-item-links">';
+          links.forEach((u,i) => {
+            html += '<a class="ms-item-link" href="' + esc(u) + '" target="_blank" rel="noopener">source ' + (i+1) + ' &#8599;</a>';
+          });
+          html += '</div>';
+        }
+        html += '</article>';
+      }
+      html += '</div></div>';
+    }
+    html += '</section>';
+  }
+  return html + '</div>';
+}
+
 async function openBlockRoom(slug){
   const room = document.getElementById('room');
   const body = document.getElementById('roomBody');
@@ -671,8 +754,19 @@ async function openBlockRoom(slug){
       </div>
     `}
   `;
-  body.querySelectorAll('.rm-link').forEach(el => el.addEventListener('click', (e) => e.stopPropagation()));
-  body.querySelectorAll('.rm-card[data-mid]').forEach(el => el.addEventListener('click', () => openMemory(el.dataset.mid)));
+
+  if (slug === 'zawwar-milestones'){
+    const genericList = body.querySelector('.rm-list');
+    const genericEmpty = body.querySelector('.rm-empty');
+    const holder = document.createElement('div');
+    holder.innerHTML = renderMilestoneTimeline(data.items);
+    if (genericList) genericList.replaceWith(holder.firstElementChild);
+    else if (genericEmpty) genericEmpty.replaceWith(holder.firstElementChild);
+    else body.appendChild(holder.firstElementChild);
+  }
+
+  body.querySelectorAll('.rm-link,.ms-item-link').forEach(el => el.addEventListener('click', (e) => e.stopPropagation()));
+  body.querySelectorAll('.rm-card[data-mid],.ms-item[data-mid]').forEach(el => el.addEventListener('click', () => openMemory(el.dataset.mid)));
 }
 function closeRoom(){ document.getElementById('room').classList.remove('open'); }
 document.getElementById('roomClose')?.addEventListener('click', closeRoom);

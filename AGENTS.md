@@ -109,7 +109,7 @@ The dashboard's knowledge blocks each filter on a tag set. If you want your memo
 | Crypto & Markets | crypto, market, trade, liquidity, regime, macro, btc, eth, framework                                                          |
 | Infrastructure   | infra, vps, mcp, systemd, pipeline, deploy, config, tech-debt, state                                                          |
 | Now Building     | milestone, ship, in-flight, ui, feature, build                                                                                |
-| Zawwar Milestones| `zawwar-milestone` + `milestone-date-YYYY-MM-DD`                                                                          |
+| Zawwar Milestones| `zawwar-milestone-canonical` + `milestone-date-YYYY-MM-DD`                                                                |
 | GitHub Projects  | `github-project` (use `scripts/build_github_projects_block.py` to populate)                                                   |
 | Documents        | `document` (auto-added by `memory.add_full` / PDF upload; don't set manually)                                                 |
 | Chats            | _(kind: chats, not tag — written by `chat_window.create`)_                                                                    |
@@ -121,9 +121,9 @@ If your memory genuinely fits none of those, write it anyway with no tags. It st
 Use the **Zawwar Milestones** block only for durable, verified events that help a future agent reconstruct Zawwar's work without re-researching it: a real ship, publication, public release, important research/document completion, major system transition, or similarly consequential milestone.
 
 Write **one event per memory** with:
-- required tag `zawwar-milestone`
+- required tag `zawwar-milestone-canonical` (you may also include `zawwar-milestone` for broad recall)
 - required actual-event tag `milestone-date-YYYY-MM-DD` (use the date it happened, not the date you are writing the memory)
-- one or two category tags such as `ship`, `publication`, `research`, `paper`, `infra`, `github`
+- one or two category tags such as `public-ship`, `publication`, `paper`, `research`, `github`
 - importance 4 normally, 5 only for load-bearing milestones
 - canonical links in the body whenever available (GitHub repo/commit, DOI, PhilPapers, Zenodo, live site, etc.)
 
@@ -141,7 +141,7 @@ Links:
 Evidence/status: <verified current / historical verified / user-reported>
 ```
 
-Do not add plans, aspirations, routine commits, vanity metrics, or unverified claims. If the date is only known to month precision, use the best verified day only when evidence supports it; otherwise do not invent a date. Corrections are append-only: write a new milestone memory naming the prior UUID and explaining the correction.
+Do not add plans, aspirations, routine commits, vanity metrics, recovery/migration work, maintenance, UI tweaks, internal version bumps, or unverified claims. If the date is only known to month precision, use the best verified day only when evidence supports it; otherwise do not invent a date. Corrections are append-only: write a new milestone memory naming the prior UUID and explaining the correction.
 
 ## Quality bar
 

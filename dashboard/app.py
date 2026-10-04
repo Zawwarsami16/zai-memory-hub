@@ -960,10 +960,10 @@ def api_agents(_: None = Depends(require_auth)):
 # way: { block: {...}, items: [...] }.
 BLOCKS = {
     "zawwar-milestones": {
-        "label": "Zawwar Milestones",
-        "sub": "Public ships · papers · selected projects",
-        "kind": "milestones",
-        "tags": ["zawwar-milestone-canonical"],
+        "label": "Zawwar Timeline",
+        "sub": "Repositories · papers · public ships",
+        "kind": "zawwar-timeline",
+        "tags": ["github-project", "zawwar-milestone-canonical"],
         "accent": "#f5dca3",
     },
     "philosophy": {
@@ -1027,18 +1027,21 @@ def _block_count_and_items(slug):
         return None
     with db() as cx, cx.cursor() as cu:
         kind = block.get("kind")
-        if kind == "milestones":
-            # Milestones are ordinary append-mostly memories with a strict tag
-            # convention.  The event date lives in milestone-date-YYYY-MM-DD so
-            # historical entries sort by when they actually happened, not by
-            # when an agent happened to add them to the Hub.
-            cu.execute(
-                "SELECT count(*)::int AS n FROM memories "
-                "WHERE deleted_at IS NULL AND 'zawwar-milestone-canonical' = ANY(tags)")
+        if kind == "zawwar-timeline":
+            # Canonical milestones + GitHub Projects inventory in one timeline.
+            cu.execute("""
+                SELECT count(*)::int AS n FROM memories
+                WHERE deleted_at IS NULL
+                  AND (
+                    'zawwar-milestone-canonical' = ANY(tags)
+                    OR 'github-project' = ANY(tags)
+                  )
+            """)
             n = cu.fetchone()["n"]
             cu.execute("""
-                WITH milestone_rows AS (
+                WITH timeline_rows AS (
                     SELECT id::text, content, tags, written_by, importance, created_at,
+                           'milestone'::text AS timeline_kind,
                            COALESCE(
                                (
                                    SELECT substring(t from '^milestone-date-([0-9]{4}-[0-9]{2}-[0-9]{2})$')::date
@@ -1047,27 +1050,81 @@ def _block_count_and_items(slug):
                                    LIMIT 1
                                ),
                                created_at::date
-                           ) AS milestone_date
+                           ) AS timeline_date
                     FROM memories
                     WHERE deleted_at IS NULL
                       AND 'zawwar-milestone-canonical' = ANY(tags)
+
+                    UNION ALL
+
+                    SELECT id::text, content, tags, written_by, importance, created_at,
+                           'repo'::text AS timeline_kind,
+                           COALESCE(
+                               NULLIF(substring(content from '\\*\\*Last push\\*\\*:[[:space:]]*([0-9]{4}-[0-9]{2}-[0-9]{2})'), '')::date,
+                               created_at::date
+                           ) AS timeline_date
+                    FROM memories
+                    WHERE deleted_at IS NULL
+                      AND 'github-project' = ANY(tags)
                 )
-                SELECT * FROM milestone_rows
-                ORDER BY milestone_date DESC, created_at DESC
-                LIMIT 100
+                SELECT * FROM timeline_rows
+                ORDER BY timeline_date DESC, created_at DESC
+                LIMIT 200
             """)
             items = []
             for r in cu.fetchall():
-                headline = ((r["content"] or "").splitlines() or ["Milestone"])[0].strip()
-                items.append({
-                    "id": r["id"], "title": headline[:180],
-                    "preview": r["content"], "full": r["content"],
-                    "written_by": r["written_by"],
-                    "created_at": r["created_at"].isoformat(),
-                    "milestone_date": r["milestone_date"].isoformat(),
-                    "tags": r["tags"] or [], "importance": r["importance"] or 3,
-                    "kind": "milestone",
-                })
+                content = r["content"] or ""
+                lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+                if r["timeline_kind"] == "repo":
+                    first = lines[0] if lines else "Repository"
+                    title = first.strip("*").strip()
+                    url = ""
+                    for ln in lines:
+                        if ln.startswith("**URL**:"):
+                            url = ln.split(":", 1)[1].strip()
+                            break
+                    tags = r["tags"] or []
+                    visibility = "private" if "private" in tags else ("public" if "public" in tags else "unknown")
+                    context = ""
+                    for idx, ln in enumerate(lines):
+                        if ln == "## Context" and idx + 1 < len(lines):
+                            context = lines[idx + 1]
+                            break
+                    if not context and " — " in title:
+                        context = title.split(" — ", 1)[1]
+                    if not context:
+                        for ln in lines:
+                            if ln.startswith(">"):
+                                context = ln.lstrip("> ").strip()
+                                break
+                    if not context:
+                        try:
+                            ridx = lines.index("## README excerpt")
+                            for ln in lines[ridx + 1:]:
+                                if not ln.startswith("#") and not ln.startswith("```") and len(ln) > 20:
+                                    context = ln
+                                    break
+                        except ValueError:
+                            pass
+                    if not context:
+                        context = "Repository in Zawwar Sami's GitHub inventory."
+                    items.append({
+                        "id": r["id"], "title": title[:180], "preview": context[:700],
+                        "written_by": r["written_by"], "created_at": r["created_at"].isoformat(),
+                        "milestone_date": r["timeline_date"].isoformat(), "tags": tags,
+                        "importance": r["importance"] or 3, "kind": "repo_timeline",
+                        "repo_visibility": visibility, "repo_url": url,
+                    })
+                else:
+                    headline = (lines[0] if lines else "Milestone").strip("*").strip()
+                    items.append({
+                        "id": r["id"], "title": headline[:180],
+                        "preview": content, "full": content, "written_by": r["written_by"],
+                        "created_at": r["created_at"].isoformat(),
+                        "milestone_date": r["timeline_date"].isoformat(),
+                        "tags": r["tags"] or [], "importance": r["importance"] or 3,
+                        "kind": "milestone",
+                    })
         elif kind == "decisions":
             cu.execute("SELECT count(*)::int AS n FROM decisions")
             n = cu.fetchone()["n"]
@@ -5467,7 +5524,7 @@ code{font-family:var(--mono);font-size:.85em;background:rgba(220,38,38,0.08);pad
 </aside>
 <div id="uploadToast"></div>
 
-<script src="/static/blocks.js?v=2026-10-04-zawwar-milestones-native"></script>
+<script src="/static/blocks.js?v=2026-10-04-zawwar-timeline-all-repos"></script>
 </body></html>
 """
 

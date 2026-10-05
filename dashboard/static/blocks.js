@@ -24,6 +24,7 @@ const BLOCK_HERO = {
   'now-building': '/static/gen/cat_coding.jpg',
   'zawwar-milestones': '/static/gen/lib_hero_archive.jpg',
   'chat-ledger': '/static/gen/cat_planning.jpg',
+  'long-term-pathway': '/static/gen/lib_hero_archive.jpg',
   'tools':        '/static/gen/cat_web.jpg',
 };
 // Hover micro-loops — only some blocks have a generated video; others

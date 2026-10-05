@@ -973,6 +973,12 @@ BLOCKS = {
         "tags": ["chat-ledger", "chat-standing-rule"],
         "accent": "#d7b4ff",
     },
+    "long-term-pathway": {
+        "label": "Long-Term Goals & Pathway",
+        "sub": "North stars · routes · checkpoints",
+        "tags": ["long-term-goal", "goal-pathway", "north-star", "life-pathway"],
+        "accent": "#8fd6c1",
+    },
     "philosophy": {
         "label": "Philosophy & Drafts",
         "sub": "Longer thinking, ideas, drafts",
@@ -5672,7 +5678,7 @@ code{font-family:var(--mono);font-size:.85em;background:rgba(220,38,38,0.08);pad
 </aside>
 <div id="uploadToast"></div>
 
-<script src="/static/blocks.js?v=2026-10-04-chat-ledger"></script>
+<script src="/static/blocks.js?v=2026-10-05-long-term-pathway"></script>
 </body></html>
 """
 

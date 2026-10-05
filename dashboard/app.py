@@ -976,7 +976,7 @@ BLOCKS = {
     "long-term-pathway": {
         "label": "Long-Term Goals & Pathway",
         "sub": "North stars · routes · checkpoints",
-        "tags": ["long-term-goal", "goal-pathway", "north-star", "life-pathway"],
+        "tags": ["zawwar-long-term-goal", "zawwar-goal-pathway"],
         "accent": "#8fd6c1",
     },
     "philosophy": {

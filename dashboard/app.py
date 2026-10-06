@@ -3,7 +3,7 @@
 FastAPI app for the ZAI Memory Hub dashboard.
 
 Routes:
-  GET  /                — universe dashboard
+  GET  /                — blocks dashboard
   GET  /login?key=...   — set session cookie
   GET  /api/stats       — counts
   GET  /api/recent      — recent memories
@@ -907,12 +907,10 @@ def api_tokens_revoke(tid: int, _: None = Depends(require_auth)):
 
 @app.get("/api/agents")
 def api_agents(_: None = Depends(require_auth)):
-    """Every distinct memory author + their presence + last 5 memories.
+    """Every distinct memory author + presence + last 5 memories.
 
-    Drives the Active Agents row of the Blocks Home.  New agents that
-    write to the Hub for the first time appear here automatically —
-    no config needed.  The 'kind' is heuristic: any slug ending in
-    '-claude' is a claude instance; others are arbitrary agents.
+    The homepage presents only the newest few authors; this endpoint
+    intentionally preserves the full historical author inventory.
     """
     with db() as cx, cx.cursor() as cu:
         # Distinct authors + counts + last_seen
@@ -997,7 +995,7 @@ BLOCKS = {
         "label": "Crypto & Markets",
         "sub": "Trading framework · liquidity · structure",
         "tags": ["crypto", "market", "trade", "liquidity", "regime", "macro",
-                 "btc", "eth", "framework", "anteroom"],
+                 "btc", "eth", "trading-framework"],
         "accent": "#ff9a4a",
     },
     "infra": {
@@ -1021,15 +1019,9 @@ BLOCKS = {
     },
     "now-building": {
         "label": "Now Building",
-        "sub": "Current ship · milestones",
-        "tags": ["milestone", "ship", "in-flight", "ui", "feature", "build"],
+        "sub": "Explicitly active work · current ships",
+        "tags": ["now-building", "in-flight", "active-build", "ship"],
         "accent": "#ff5046",
-    },
-    "tools": {
-        "label": "Tool Calls",
-        "sub": "Recent MCP tool invocations",
-        "kind": "tools",
-        "accent": "#7aa6ff",
     },
 }
 
@@ -1817,12 +1809,21 @@ def timeline_route(request: Request):
 
 @app.get("/api/timeline")
 def api_timeline(n: int = 30, _: None = Depends(require_auth)):
-    """Last N memories chronologically — drives the Timing block."""
+    """Last N human-meaningful memories; operational chatter stays archived."""
     with db() as cx, cx.cursor() as cu:
         cu.execute(
-            "SELECT id::text, substring(content for 140) AS preview, "
-            "tags, written_by, importance, created_at "
-            "FROM memories WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT %s", (n,))
+            """SELECT id::text, substring(content for 140) AS preview,
+                      tags, written_by, importance, created_at
+                 FROM memories
+                WHERE deleted_at IS NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM unnest(COALESCE(tags, ARRAY[]::text[])) AS t
+                     WHERE t IN ('heartbeat', 'tool-call', 'tool-log', 'interaction-log',
+                                 'chat-ledger-revision', 'zawwar-milestone-revision')
+                        OR t LIKE 'moltbook%%'
+                        OR t LIKE '%%heartbeat%%'
+                  )
+                ORDER BY created_at DESC LIMIT %s""", (n,))
         return [{**r, "created_at": r["created_at"].isoformat()} for r in cu.fetchall()]
 
 
@@ -5532,7 +5533,7 @@ code{font-family:var(--mono);font-size:.85em;background:rgba(220,38,38,0.08);pad
     <div class="hdr-spacer"></div>
     <div class="hdr-actions">
       <a class="hdr-btn" href="/library"><svg viewBox="0 0 24 24"><path d="M4 4h12l4 4v12H4z"/><path d="M4 8h16M8 12h8M8 16h6"/></svg>Library</a>
-      <a class="hdr-btn" href="/universe"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="9" ry="3.5"/></svg>Universe</a>
+      <a class="hdr-btn" href="/timeline"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Timeline</a>
       <a class="hdr-btn" href="/connect"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></svg>Connect</a>
     </div>
   </div>
@@ -5545,7 +5546,7 @@ code{font-family:var(--mono);font-size:.85em;background:rgba(220,38,38,0.08);pad
       <source src="/static/gen/lib_video_hero.mp4" type="video/mp4">
     </video>
     <div class="hero-text">
-      <div class="sub">Living Memory · Hub <span style="opacity:.5">· build 2026-05-20-3</span></div>
+      <div class="sub">Living Memory · Hub <span style="opacity:.5">· phase 1</span></div>
       <h1>A shared mind <br>across agents.</h1>
     </div>
   </section>
@@ -5555,8 +5556,8 @@ code{font-family:var(--mono);font-size:.85em;background:rgba(220,38,38,0.08);pad
       <section class="section" style="margin-top:0">
         <div class="section-head">
           <div class="left">
-            <span class="h-eyebrow">Active Agents</span>
-            <span class="h-title">connected right now</span>
+            <span class="h-eyebrow">Recent Writers</span>
+            <span class="h-title">current authors · full history preserved</span>
           </div>
           <span class="count" id="agentCount">—</span>
         </div>
@@ -5654,14 +5655,13 @@ code{font-family:var(--mono);font-size:.85em;background:rgba(220,38,38,0.08);pad
         <div id="sideDecision"></div>
       </section>
       <section class="side-block">
-        <div class="side-head">Universe</div>
-        <a class="side-univ" href="/universe">
-          <div class="side-univ-vis"></div>
-          <div class="side-univ-cta">
-            <div>Open the memory cloud</div>
-            <div class="arr">→</div>
-          </div>
-        </a>
+        <div class="side-head">Quick access</div>
+        <div class="side-tags">
+          <a class="st" href="/library">Library</a>
+          <a class="st" href="/timeline">Timeline</a>
+          <a class="st" href="/trash">Trash</a>
+          <a class="st" href="/connect">Connect</a>
+        </div>
       </section>
     </aside>
   </div>
@@ -5678,7 +5678,7 @@ code{font-family:var(--mono);font-size:.85em;background:rgba(220,38,38,0.08);pad
 </aside>
 <div id="uploadToast"></div>
 
-<script src="/static/blocks.js?v=2026-10-05-long-term-pathway"></script>
+<script src="/static/blocks.js?v=2026-10-06-phase-1"></script>
 </body></html>
 """
 
@@ -5745,11 +5745,11 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
 
 /* ===== BOOKSHELVES (library) ===== */
 .shelves-section{grid-column:1 / -1;margin-bottom:8px}
-.shelves-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid var(--color-line)}
-.shelves-head .lbl{font-family:var(--font-mono);font-size:10px;letter-spacing:.36em;color:var(--color-gold-deep,#8c6f3a);text-transform:uppercase}
-.shelves-head .ttl{font-family:var(--font-serif-italic);font-style:italic;font-size:18px;color:var(--color-fg-soft,#d4c3a0);margin-left:14px}
+.shelves-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.shelves-head .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.36em;color:var(--gold-deep);text-transform:uppercase}
+.shelves-head .ttl{font-family:var(--serif-soft);font-style:italic;font-size:18px;color:var(--fg-soft);margin-left:14px}
 .shelves{display:grid;grid-template-columns:repeat(auto-fill, minmax(180px, 1fr));gap:14px}
-.shelf{position:relative;aspect-ratio:3/4;border:1px solid var(--color-line);border-radius:3px;overflow:hidden;cursor:pointer;background:#1a0508;transition:transform .25s cubic-bezier(.22,.61,.36,1), border-color .25s, box-shadow .25s}
+.shelf{position:relative;aspect-ratio:3/4;border:1px solid var(--line);border-radius:3px;overflow:hidden;cursor:pointer;background:#1a0508;transition:transform .25s cubic-bezier(.22,.61,.36,1), border-color .25s, box-shadow .25s}
 .shelf:hover{transform:translateY(-3px);border-color:var(--color-accent,#dc2626);box-shadow:0 12px 32px -14px rgba(220,38,38,0.35)}
 .shelf img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:0}
 .shelf::after{content:'';position:absolute;inset:0;background:linear-gradient(180deg, rgba(10,5,8,0.10) 0%, rgba(10,5,8,0.55) 60%, rgba(10,5,8,0.95) 100%);z-index:1}
@@ -5905,7 +5905,7 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
   .rail-l{order:2;padding-top:8px;border-top:1px solid var(--line)}
   .rail-r{order:3;padding-top:8px;border-top:1px solid var(--line)}
   .feed{order:1}
-  .hdr-inner{padding:12px 16px;gap:12px}
+  .hdr-inner{padding:12px 16px;gap:12px;flex-wrap:wrap}
   .hdr-tagline{display:none}
   .hdr-search{order:99;width:100%;max-width:100%;margin:0;flex-basis:100%}
   .card.hero .headline{font-size:22px}
@@ -5924,8 +5924,8 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
       <kbd>⌘K</kbd>
     </div>
     <div class="hdr-actions">
-      <a class="hdr-btn" href="/universe"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="9" ry="3.5"/></svg>Universe</a>
-      <a class="hdr-btn" href="/dashboard"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard</a>
+      <a class="hdr-btn" href="/"><svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9H4z"/><path d="M9 20v-6h6v6"/></svg>Home</a>
+      <a class="hdr-btn" href="/connect"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg>Connect</a>
     </div>
   </div>
 </header>
@@ -5956,7 +5956,7 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
   <div id="readerBody"></div>
 </aside>
 
-<script src="/static/library.js"></script>
+<script src="/static/library.js?v=2026-10-06-phase-1"></script>
 </body></html>
 """
 
@@ -6194,7 +6194,6 @@ export ZAI_HUB_WRITTEN_BY=<span class="v">"your-agent-slug"</span>   <span class
 <div class="linkrow" style="margin-top:30px">
   <a href="/">Home</a>
   <a href="/library">Library</a>
-  <a href="/universe">Universe</a>
   <a href="/connect">/connect docs</a>
   <a href="/timeline">Timeline</a>
 </div>
@@ -6956,14 +6955,12 @@ def connect(request: Request):
     return HTMLResponse(CONNECT_HTML)
 
 
-@app.get("/universe", response_class=HTMLResponse)
+@app.get("/universe")
 def universe(request: Request):
+    """Retired visual surface; keep old bookmarks working."""
     if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
-        return HTMLResponse(
-            "<html><body style='font-family:monospace;padding:40px;background:#08030a;color:#f5ecdb'>"
-            "ZAI Memory Hub — auth required. Please <a href='/login'>sign in</a>.</body></html>",
-            status_code=401)
-    return HTMLResponse(UNIVERSE_HTML)
+        return RedirectResponse(url="/login", status_code=307)
+    return RedirectResponse(url="/", status_code=307)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -6992,18 +6989,15 @@ def library_route(request: Request):
             "<html><body style='font-family:monospace;padding:40px;background:#0a0508;color:#f5ecdb'>"
             "ZAI Memory Hub — auth required. Please <a href='/login'>sign in</a>.</body></html>",
             status_code=401)
-    return HTMLResponse(LIBRARY_HTML)
+    return HTMLResponse(LIBRARY_HTML, headers={"Cache-Control": "no-store"})
 
 
-@app.get("/dashboard", response_class=HTMLResponse)
+@app.get("/dashboard")
 def dashboard(request: Request):
-    """The previous hub (universe-as-portal layout). Demoted but preserved."""
+    """Retired legacy portal; route old bookmarks to the Blocks Home."""
     if request.cookies.get(COOKIE_NAME) != DASHBOARD_KEY:
-        return HTMLResponse(
-            "<html><body style='font-family:monospace;padding:40px;background:#08030a;color:#f5ecdb'>"
-            "ZAI Memory Hub — auth required. Please <a href='/login'>sign in</a>.</body></html>",
-            status_code=401)
-    return HTMLResponse(INDEX_HTML)
+        return RedirectResponse(url="/login", status_code=307)
+    return RedirectResponse(url="/", status_code=307)
 
 
 if __name__ == "__main__":

@@ -5678,7 +5678,7 @@ code{font-family:var(--mono);font-size:.85em;background:rgba(220,38,38,0.08);pad
 </aside>
 <div id="uploadToast"></div>
 
-<script src="/static/blocks.js?v=2026-10-06-phase-1"></script>
+<script src="/static/blocks.js?v=2026-10-06-phase-1b"></script>
 </body></html>
 """
 
@@ -5956,7 +5956,7 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
   <div id="readerBody"></div>
 </aside>
 
-<script src="/static/library.js?v=2026-10-06-phase-1"></script>
+<script src="/static/library.js?v=2026-10-06-phase-1b"></script>
 </body></html>
 """
 

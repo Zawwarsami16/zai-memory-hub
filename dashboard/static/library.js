@@ -297,7 +297,9 @@ function renderTaxonomy(){
 // ----- Render: right context panel -------------------------------
 function renderContext(){
   // Online block
-  const onlineHTML = State.presence.map(p => {
+  const onlineHTML = State.presence
+    .filter(p => p.status === 'online' || p.status === 'recent')
+    .map(p => {
     const cls = p.status === 'online' ? 'online' : (p.status === 'recent' ? 'recent' : 'offline');
     const ago = p.age_s != null
       ? (p.age_s < 60 ? Math.floor(p.age_s)+'s' :

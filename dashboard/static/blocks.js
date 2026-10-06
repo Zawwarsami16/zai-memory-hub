@@ -91,9 +91,12 @@ async function loadAll(){
 // ----- Render: Active Agents row --------------------------------
 function renderAgents(){
   const el = document.getElementById('agents');
-  const visibleAgents = State.agents.slice(0, 3);
+  const recentCutoff = Date.now() - 30 * 86400 * 1000;
+  const visibleAgents = State.agents
+    .filter(a => a.last_seen && new Date(a.last_seen).getTime() >= recentCutoff)
+    .slice(0, 3);
   const counter = document.getElementById('agentCount');
-  if (counter) counter.textContent = visibleAgents.length + ' shown · ' + State.agents.length + ' total';
+  if (counter) counter.textContent = visibleAgents.length + ' recent · ' + State.agents.length + ' historical';
   el.innerHTML = visibleAgents.map((a, i) => {
     const img = avatarFor(a.slug);
     const col = colorFor(a.slug);
@@ -173,10 +176,11 @@ function renderSide(){
   // Online
   const onlineEl = document.getElementById('sideOnline');
   if (onlineEl){
-    if (!State.presence.length){
+    const activePresence = State.presence.filter(p => p.status === 'online' || p.status === 'recent');
+    if (!activePresence.length){
       onlineEl.innerHTML = '<div style="font-family:var(--serif-soft);font-style:italic;color:var(--fg-dim);font-size:12px">no presence data</div>';
     } else {
-      onlineEl.innerHTML = State.presence.map(p => {
+      onlineEl.innerHTML = activePresence.map(p => {
         const cls = p.status;
         const ago = p.age_s != null
           ? (p.age_s < 60 ? Math.floor(p.age_s)+'s' :

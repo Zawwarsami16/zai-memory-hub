@@ -1,7 +1,7 @@
 // ZAI Memory Hub — Blocks Home
 //
-// The primary surface.  Stack of enterable blocks: an Active Agents row
-// at top (auto-discovers every distinct memory author), a Timeline of
+// The primary surface.  Stack of enterable blocks: a compact recent-writers
+// row, a signal-first Timeline of
 // the most recent 30 events, and a grid of topical blocks (Philosophy,
 // Hacking, Decisions, etc.).  Click any block → "room" overlay with
 // that subject's full content properly organized.
@@ -25,7 +25,6 @@ const BLOCK_HERO = {
   'zawwar-milestones': '/static/gen/lib_hero_archive.jpg',
   'chat-ledger': '/static/gen/cat_planning.jpg',
   'long-term-pathway': '/static/gen/lib_hero_archive.jpg',
-  'tools':        '/static/gen/cat_web.jpg',
 };
 // Hover micro-loops — only some blocks have a generated video; others
 // keep the still image.  Probed at load time so we don't reference a
@@ -92,7 +91,10 @@ async function loadAll(){
 // ----- Render: Active Agents row --------------------------------
 function renderAgents(){
   const el = document.getElementById('agents');
-  el.innerHTML = State.agents.map((a, i) => {
+  const visibleAgents = State.agents.slice(0, 3);
+  const counter = document.getElementById('agentCount');
+  if (counter) counter.textContent = visibleAgents.length + ' shown · ' + State.agents.length + ' total';
+  el.innerHTML = visibleAgents.map((a, i) => {
     const img = avatarFor(a.slug);
     const col = colorFor(a.slug);
     const delay = '';

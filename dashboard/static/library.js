@@ -1,6 +1,6 @@
 // ZAI Memory Hub — Living Library
 //
-// Primary surface at /.  Editorial reader for everything ZAI has recorded.
+// Editorial reader at /library. Operational chatter is hidden here, never deleted.
 // Three-column shell, taxonomy nav on left, card feed in centre, live
 // context on right.  Search-first.  Click any card → reader drawer.
 
@@ -28,6 +28,19 @@ const ACTOR_IMG = {
   'chat-claude':'/static/gen/actor_chat.jpg',
 };
 const HEROES = ['/static/gen/lib_hero_today.jpg','/static/gen/lib_hero_archive.jpg','/static/gen/lib_hero_window.jpg'];
+const HIDDEN_TAG_PREFIXES = [
+  'moltbook', 'heartbeat', 'tool-call', 'tool-log', 'interaction-log',
+  'chat-ledger-revision', 'zawwar-milestone-revision', 'healthcheck'
+];
+
+function isOperationalMemory(m){
+  const tags = (m.tags || []).map(t => String(t).toLowerCase());
+  return tags.some(t => HIDDEN_TAG_PREFIXES.some(prefix => t === prefix || t.startsWith(prefix + '-')));
+}
+function isDisplayTag(tag){
+  const t = String(tag || '').toLowerCase();
+  return !HIDDEN_TAG_PREFIXES.some(prefix => t === prefix || t.startsWith(prefix + '-'));
+}
 
 const State = {
   memories: [],       // full set, sorted newest first
@@ -89,9 +102,9 @@ async function loadAll(){
     fetch('/api/presence').then(r => r.ok ? r.json() : []).catch(()=>[]),
     fetch('/api/memory_stream').then(r => r.ok ? r.json() : []).catch(()=>[]),
   ]);
-  State.memories = recent;
+  State.memories = recent.filter(m => !isOperationalMemory(m));
   State.decisions = decisions;
-  State.clusters = clusters;
+  State.clusters = clusters.filter(c => c.slug !== 'agents');
   State.presence = presence;
   State.stream = stream;
   renderAll();
@@ -213,7 +226,7 @@ function renderTaxonomy(){
   const f = State.filter;
   const isActive = (kind, val) => f.kind === kind && (val == null || f.value === val);
 
-  const cats = State.clusters.filter(c => c.slug !== 'core');
+  const cats = State.clusters.filter(c => c.slug !== 'core' && c.slug !== 'agents');
   const catRows = cats.map(c => {
     const localN = State.memories.filter(m => guessCategory(m) === c.slug).length;
     const active = isActive('category', c.slug);
@@ -225,7 +238,7 @@ function renderTaxonomy(){
   }).join('');
 
   // Unique authors
-  const authors = Array.from(new Set(State.memories.map(m => m.written_by).filter(Boolean)));
+  const authors = Array.from(new Set(State.memories.map(m => m.written_by).filter(Boolean))).slice(0, 8);
   const authorRows = authors.map(a => {
     const localN = State.memories.filter(m => m.written_by === a).length;
     const active = isActive('author', a);
@@ -305,7 +318,9 @@ function renderContext(){
   // Trending tags
   const tagCount = new Map();
   for (const m of State.memories.slice(0, 30)){
-    for (const t of (m.tags || [])) tagCount.set(t, (tagCount.get(t)||0) + 1);
+    for (const t of (m.tags || [])) {
+      if (isDisplayTag(t)) tagCount.set(t, (tagCount.get(t)||0) + 1);
+    }
   }
   const trendingHTML = Array.from(tagCount.entries()).sort((a,b) => b[1]-a[1]).slice(0, 7).map(([t, n]) =>
     `<a class="tg" data-tag="${esc(t)}" href="javascript:void(0)">#${esc(t)} <span>${n}</span></a>`
@@ -336,17 +351,6 @@ function renderContext(){
     <section class="ctx">
       <div class="ctx-head">Recent decisions</div>
       ${decHTML || '<div class="ctx-empty">no decisions yet</div>'}
-    </section>
-    <section class="ctx universe-portal">
-      <div class="ctx-head">Universe</div>
-      <a class="univ-card" href="/universe">
-        <div class="univ-vis"></div>
-        <div class="univ-cta">
-          <div class="univ-title">Open the memory cloud</div>
-          <div class="univ-sub">A spatial view of every cluster</div>
-          <div class="univ-arrow">→</div>
-        </div>
-      </a>
     </section>
   `;
   // Trending tag click
@@ -511,7 +515,10 @@ function connectSSE(){
 function renderShelves(){
   const el = document.getElementById('shelves');
   if (!el) return;
-  const cats = State.clusters.filter(c => c.slug !== 'core');
+  const cats = State.clusters
+    .filter(c => c.slug !== 'core' && c.slug !== 'agents' && Number(c.nodes || 0) > 0)
+    .sort((a, b) => Number(b.nodes || 0) - Number(a.nodes || 0))
+    .slice(0, 6);
   const activeSlug = State.filter.kind === 'category' ? State.filter.value : null;
   el.innerHTML = cats.map(c => `
     <article class="shelf ${activeSlug === c.slug ? 'active' : ''}" data-slug="${esc(c.slug)}" data-label="${esc(c.label)}">

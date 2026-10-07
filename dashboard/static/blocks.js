@@ -610,6 +610,21 @@ async function openBlockRoom(slug){
   const b = data.block;
   const heroUrl = BLOCK_HERO[slug] || '';
   const renderItem = (it) => {
+    if (it.kind === 'paper_timeline'){
+      const links = milestoneUrls(it.full || it.preview || '');
+      const lines = String(it.full || it.preview || '').split('\n');
+      const changed = lines.find(x => /^What changed:/i.test(x));
+      const summary = changed ? changed.replace(/^What changed:\s*/i, '') : (it.full || it.preview || '');
+      return `<li class="rm-card paper-timeline" data-mid="${esc(it.id)}">
+        <div class="rm-i">${esc(it.series_code || 'PAPER')}</div>
+        <div class="rm-card-body">
+          <div class="rm-card-meta">${esc(formatMilestoneDate(it.milestone_date))} · PAPER</div>
+          <div class="rm-card-title">${esc(it.title || 'Paper')}</div>
+          <div class="rm-card-text">${esc(trunc(summary, 360))}</div>
+          ${links.length ? `<div class="rm-alts">${links.map((u,i) => `<a class="tag rm-link" href="${esc(u)}" target="_blank" rel="noopener">source ${i+1} ↗</a>`).join(' ')}</div>` : ''}
+        </div>
+      </li>`;
+    }
     if (it.kind === 'milestone'){
       const links = milestoneUrls(it.full || it.preview || '');
       const lines = String(it.full || it.preview || '').split('\n');
@@ -712,6 +727,22 @@ async function openBlockRoom(slug){
     </div>
   `;
   let roomContent = genericRoomContent;
+  if (slug === 'zawwar-milestones'){
+    const papers = data.items.filter(it => it.kind === 'paper_timeline');
+    const timelineItems = data.items.filter(it => it.kind !== 'paper_timeline');
+    const timelineHtml = timelineItems.length ? timelineItems.map(renderItem).join('') : '<li class="rm-card"><div class="rm-card-body"><div class="rm-card-text">No achievements or repositories yet.</div></div></li>';
+    const paperHtml = papers.length ? papers.map(renderItem).join('') : '<li class="rm-card"><div class="rm-card-body"><div class="rm-card-text">No papers yet.</div></div></li>';
+    roomContent = `<div class="chat-ledger-grid zawwar-timeline-grid">
+      <section class="chat-ledger-col">
+        <div class="chat-ledger-col-head"><div class="chat-ledger-col-title">Achievements & Builds</div><div class="chat-ledger-col-sub">${timelineItems.length} entries</div></div>
+        <ol class="chat-ledger-list">${timelineHtml}</ol>
+      </section>
+      <aside class="chat-ledger-col">
+        <div class="chat-ledger-col-head"><div class="chat-ledger-col-title">Papers</div><div class="chat-ledger-col-sub">${papers.length} published</div></div>
+        <ol class="chat-ledger-list chat-rule-list">${paperHtml}</ol>
+      </aside>
+    </div>`;
+  }
   if (slug === 'chat-ledger'){
     const chats = data.items.filter(it => it.kind === 'chat_entry');
     const rules = data.items.filter(it => it.kind === 'chat_rule');

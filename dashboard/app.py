@@ -959,7 +959,7 @@ def api_agents(_: None = Depends(require_auth)):
 BLOCKS = {
     "zawwar-milestones": {
         "label": "Zawwar Timeline",
-        "sub": "Repositories · papers · public ships",
+        "sub": "Achievements · repositories · papers",
         "kind": "zawwar-timeline",
         "tags": ["github-project", "zawwar-milestone-canonical"],
         "accent": "#f5dca3",
@@ -1246,6 +1246,12 @@ def _block_count_and_items(slug):
                     })
                 else:
                     headline = (lines[0] if lines else "Milestone").strip("*").strip()
+                    tags = r["tags"] or []
+                    series_code = ""
+                    for ln in lines:
+                        if ln.lower().startswith("series:"):
+                            series_code = ln.split(":", 1)[1].strip()
+                            break
                     items.append({
                         "id": milestone_revision["id"] if milestone_revision else r["id"],
                         "base_id": r["id"], "title": headline[:180],
@@ -1253,8 +1259,9 @@ def _block_count_and_items(slug):
                         "created_at": r["created_at"].isoformat(),
                         "updated_at": milestone_revision["created_at"].isoformat() if milestone_revision else None,
                         "milestone_date": r["timeline_date"].isoformat(),
-                        "tags": r["tags"] or [], "importance": r["importance"] or 3,
-                        "kind": "milestone",
+                        "tags": tags, "importance": r["importance"] or 3,
+                        "series_code": series_code,
+                        "kind": "paper_timeline" if "paper" in tags else "milestone",
                     })
         elif kind == "decisions":
             cu.execute("SELECT count(*)::int AS n FROM decisions")

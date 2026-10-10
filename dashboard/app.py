@@ -977,6 +977,12 @@ BLOCKS = {
         "tags": ["zawwar-long-term-goal", "zawwar-goal-pathway"],
         "accent": "#8fd6c1",
     },
+    "all-about-zai": {
+        "label": "All about ZAI",
+        "sub": "Zawwar Autonomous Intelligence · identity · systems · history",
+        "tags": ["zai-profile"],
+        "accent": "#efc581",
+    },
     "philosophy": {
         "label": "Philosophy & Drafts",
         "sub": "Longer thinking, ideas, drafts",

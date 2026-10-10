@@ -25,6 +25,7 @@ const BLOCK_HERO = {
   'zawwar-milestones': '/static/gen/lib_hero_archive.jpg',
   'chat-ledger': '/static/gen/cat_planning.jpg',
   'long-term-pathway': '/static/gen/lib_hero_archive.jpg',
+  'all-about-zai': '/static/zai-all-about.svg',
 };
 // Hover micro-loops — only some blocks have a generated video; others
 // keep the still image.  Probed at load time so we don't reference a
@@ -756,6 +757,39 @@ async function openBlockRoom(slug){
       <aside class="chat-ledger-col">
         <div class="chat-ledger-col-head"><div class="chat-ledger-col-title">Standing Context</div><div class="chat-ledger-col-sub">${rules.length} rules</div></div>
         <ol class="chat-ledger-list chat-rule-list">${ruleHtml}</ol>
+      </aside>
+    </div>`;
+  }
+  if (slug === 'all-about-zai'){
+    // Reuse the native Timeline/Chat Ledger two-column room rather than
+    // introducing another dashboard layout or changing existing blocks.
+    const core = data.items.filter(it => (it.tags || []).includes('zai-profile-core'));
+    const records = data.items.filter(it => !(it.tags || []).includes('zai-profile-core'));
+    const zaiCard = (it) => {
+      const full = String(it.full || it.preview || '');
+      const lines = full.split('\n').map(x => x.trim()).filter(Boolean);
+      const title = lines[0] || 'ZAI record';
+      const detail = lines.slice(1).filter(x => !/^links?:/i.test(x) && !/^-?\s*https?:\/\//i.test(x)).join(' ');
+      const links = milestoneUrls(full);
+      return `<li class="rm-card" data-mid="${esc(it.id)}">
+        <div class="rm-i">◆</div>
+        <div class="rm-card-body">
+          <div class="rm-card-meta">${core.includes(it) ? 'IDENTITY & PURPOSE' : 'SYSTEMS & RECORDS'} · ${esc(timeAgo(it.created_at))}</div>
+          <div class="rm-card-title">${esc(title)}</div>
+          <div class="rm-card-text">${esc(trunc(detail, 420))}</div>
+          ${links.length ? `<div class="rm-alts">${links.map((u,i) => `<a class="tag rm-link" href="${esc(u)}" target="_blank" rel="noopener noreferrer">source ${i+1} ↗</a>`).join(' ')}</div>` : ''}
+        </div>
+      </li>`;
+    };
+    const empty = '<li class="rm-card"><div class="rm-card-body"><div class="rm-card-text">Entries will appear here as they are documented.</div></div></li>';
+    roomContent = `<div class="chat-ledger-grid">
+      <section class="chat-ledger-col">
+        <div class="chat-ledger-col-head"><div class="chat-ledger-col-title">Identity & Purpose</div><div class="chat-ledger-col-sub">${core.length} records</div></div>
+        <ol class="chat-ledger-list">${core.length ? core.map(zaiCard).join('') : empty}</ol>
+      </section>
+      <aside class="chat-ledger-col">
+        <div class="chat-ledger-col-head"><div class="chat-ledger-col-title">Systems & History</div><div class="chat-ledger-col-sub">${records.length} records</div></div>
+        <ol class="chat-ledger-list chat-rule-list">${records.length ? records.map(zaiCard).join('') : empty}</ol>
       </aside>
     </div>`;
   }

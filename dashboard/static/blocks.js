@@ -763,8 +763,28 @@ async function openBlockRoom(slug){
   if (slug === 'all-about-zai'){
     // Reuse the native Timeline/Chat Ledger two-column room rather than
     // introducing another dashboard layout or changing existing blocks.
+    // One canonical book pointer, stored as an append-only Hub memory.
+    // Show it as a featured card without duplicating it in either column.
+    const currentBook = data.items.find(it => (it.tags || []).includes('zai-profile-current-sourcebook'));
     const core = data.items.filter(it => (it.tags || []).includes('zai-profile-core'));
-    const records = data.items.filter(it => !(it.tags || []).includes('zai-profile-core'));
+    const records = data.items.filter(it =>
+      !(it.tags || []).includes('zai-profile-core') &&
+      !(it.tags || []).includes('zai-profile-current-sourcebook'));
+    const bookText = String(currentBook?.full || '');
+    const bookUrl = milestoneUrls(bookText).find(u =>
+      u.startsWith('https://github.com/Zawwarsami16/zai-runtime-private/blob/main/private_dossier/ALL_ABOUT_ZAI_PRIVATE_SOURCE_EDITION_v') &&
+      u.endsWith('.pdf')) || '';
+    const bookTitle = bookText.split('\n').find(x => x.trim()) || 'All About ZAI — Private Sourcebook';
+    const bookEdition = bookText.split('\n').find(x => /^Edition:/i.test(x.trim())) || '';
+    const bookPanel = currentBook ? `<section class="rm-card" data-mid="${esc(currentBook.id)}" style="margin-bottom:18px;cursor:pointer">
+      <div class="rm-i">PDF</div>
+      <div class="rm-card-body">
+        <div class="rm-card-meta">CANONICAL PRIVATE SOURCEBOOK · SOURCE-FIRST REFERENCE</div>
+        <div class="rm-card-title">${esc(bookTitle)}</div>
+        <div class="rm-card-text">${esc(bookEdition)} · Read the relevant original material for ZAI work. Update only affected sections when material new evidence requires it; preserve historical editions and sources. Tap this card for full instructions.</div>
+        ${bookUrl ? `<div class="rm-alts"><a class="tag rm-link" href="${esc(bookUrl)}" target="_blank" rel="noopener noreferrer">Open private PDF ↗</a></div>` : ''}
+      </div>
+    </section>` : '';
     const zaiCard = (it) => {
       const full = String(it.full || it.preview || '');
       const lines = full.split('\n').map(x => x.trim()).filter(Boolean);
@@ -782,7 +802,7 @@ async function openBlockRoom(slug){
       </li>`;
     };
     const empty = '<li class="rm-card"><div class="rm-card-body"><div class="rm-card-text">Entries will appear here as they are documented.</div></div></li>';
-    roomContent = `<div class="chat-ledger-grid">
+    roomContent = `${bookPanel}<div class="chat-ledger-grid">
       <section class="chat-ledger-col">
         <div class="chat-ledger-col-head"><div class="chat-ledger-col-title">Identity & Purpose</div><div class="chat-ledger-col-sub">${core.length} records</div></div>
         <ol class="chat-ledger-list">${core.length ? core.map(zaiCard).join('') : empty}</ol>

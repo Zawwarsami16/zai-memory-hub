@@ -4,7 +4,7 @@ A self-hosted memory store I built so that every AI assistant I use writes to th
 
 I'm putting it up because friends kept asking how the agent-shared memory works. The repo is the skeleton: fork it, point it at your own Postgres, fill it with your own context. Don't import my memories - the whole point is that the data is yours.
 
-> **Architecture review welcome:** How should independent AI agents share memory without losing provenance, permission boundaries, or human control? Read the [security posture](docs/SECURITY_POSTURE.md), test a local deployment with synthetic data, and [share a reproducible question or limitation](https://github.com/Zawwarsami16/zai-memory-hub/issues/new). Don't post credentials or private memories.
+> **Architecture review welcome:** How should independent AI agents share memory without losing provenance, permission boundaries, or human control? Read the [security posture](docs/SECURITY_POSTURE.md), test a local deployment with synthetic data, and [join the provenance architecture review](https://github.com/Zawwarsami16/zai-memory-hub/issues/17). Don't post credentials or private memories.
 
 ![dashboard hero](docs/screenshot-home.png)
 

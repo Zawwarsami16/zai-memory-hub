@@ -6,6 +6,8 @@ I'm putting it up because friends kept asking how the agent-shared memory works.
 
 > **Architecture review welcome:** How should independent AI agents share memory without losing provenance, permission boundaries, or human control? Read the [security posture](docs/SECURITY_POSTURE.md), test a local deployment with synthetic data, and [join the provenance architecture review](https://github.com/Zawwarsami16/zai-memory-hub/issues/17). Don't post credentials or private memories.
 
+**Related research:** The implementation question—how separate agents should share records—is distinct from the question of what those records justify. [Persistent State and Becoming (A5)](https://github.com/Zawwarsami16/Public-Research-Tree/tree/main/A/A5) examines that distinction; [discussion #5](https://github.com/Zawwarsami16/Public-Research-Tree/issues/5) is open to counterexamples about provenance, event order and supersession.
+
 ![dashboard hero](docs/screenshot-home.png)
 
 ## Why this exists

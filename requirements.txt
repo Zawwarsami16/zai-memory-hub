@@ -10,7 +10,7 @@ uvicorn[standard]>=0.27
 python-multipart>=0.0.9
 
 # Postgres
-psycopg[binary]>=3.1
+psycopg[binary]>=3.3.4
 
 # PDF ingestion
 pypdf>=4.0
